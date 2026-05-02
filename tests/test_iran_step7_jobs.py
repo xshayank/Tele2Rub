@@ -702,7 +702,7 @@ class TestJobEvents:
         assert "text/event-stream" in resp.headers["content-type"]
         body = resp.text
         assert "event: job.completed" in body
-        assert "job.completed" in body
+        assert '"type": "job.completed"' in body
 
     @pytest.mark.asyncio
     async def test_sse_failed_job_emits_terminal_event(self, client):
@@ -820,8 +820,8 @@ class TestDownloadJob:
         )
         # follow_redirects=False, so we get the 302
         assert resp.status_code == 302
-        assert "location" in resp.headers
-        assert "s3.example.com" in resp.headers["location"]
+        location = resp.headers["location"]
+        assert location == "https://s3.example.com/presigned"
 
     @pytest.mark.asyncio
     async def test_download_out_of_range_part_returns_404(self, client):

@@ -454,6 +454,9 @@ async def cancel_job(
             extra={"job_id": job_id, "error": str(exc)},
         )
 
+    # Capture previous status before mutating
+    previous_status = job.status
+
     # Update DB
     job.status = "cancelled"
 
@@ -462,7 +465,7 @@ async def cancel_job(
             actor_id=current_user.id,
             action="job.cancelled",
             target_id=job_id,
-            payload={"previous_status": job.status},
+            payload={"previous_status": previous_status},
         )
     )
 
@@ -573,8 +576,8 @@ async def job_events(
 @router.get("/{job_id}/download")
 async def download_job(
     job_id: str,
+    request: Request,
     part: int | None = Query(default=None, ge=0),
-    request: Request = None,  # type: ignore[assignment]
     session: AsyncSession = Depends(get_db),
     current_user: Any = Depends(get_current_user),
 ) -> Any:
