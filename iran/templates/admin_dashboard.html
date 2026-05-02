@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}داشبورد مدیریت — RubeTunes{% endblock %}
+{% block content %}
+<h1>داشبورد مدیریت</h1>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem;margin-bottom:2rem" id="summary-cards">
+  <div class="card" style="margin-bottom:0">
+    <div style="color:var(--muted);font-size:0.85rem">کاربران فعال</div>
+    <div style="font-size:2rem;font-weight:700" id="card-active-users">—</div>
+  </div>
+  <div class="card" style="margin-bottom:0">
+    <div style="color:var(--muted);font-size:0.85rem">جاب‌های امروز</div>
+    <div style="font-size:2rem;font-weight:700" id="card-jobs-today">—</div>
+  </div>
+  <div class="card" style="margin-bottom:0">
+    <div style="color:var(--muted);font-size:0.85rem">وضعیت Worker</div>
+    <div style="font-size:1.5rem;font-weight:700" id="card-worker-status">—</div>
+  </div>
+  <div class="card" style="margin-bottom:0">
+    <div style="color:var(--muted);font-size:0.85rem">در انتظار تأیید</div>
+    <div style="font-size:2rem;font-weight:700" id="card-pending">—</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>آخرین فعالیت‌ها</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>زمان</th>
+        <th>اقدام</th>
+        <th>هدف</th>
+      </tr>
+    </thead>
+    <tbody id="audit-recent">
+      <tr><td colspan="3" style="color:var(--muted)">در حال بارگذاری…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<nav style="margin-top:1.5rem;display:flex;flex-wrap:wrap;gap:0.75rem">
+  <a class="btn btn-secondary" href="/admin/users">👤 کاربران</a>
+  <a class="btn btn-secondary" href="/admin/registrations">📋 ثبت‌نام‌ها</a>
+  <a class="btn btn-secondary" href="/admin/jobs">🗂 جاب‌ها</a>
+  <a class="btn btn-secondary" href="/admin/storage">💾 ذخیره‌سازی</a>
+  <a class="btn btn-secondary" href="/admin/settings">⚙️ تنظیمات</a>
+  <a class="btn btn-secondary" href="/admin/health">❤️ سلامت</a>
+  <a class="btn btn-secondary" href="/admin/audit">📜 گزارش</a>
+</nav>
+{% endblock %}
+{% block scripts %}
+<script>
+const token = () => sessionStorage.getItem('rt_access_token');
+
+async function apiGet(path) {
+  const r = await fetch(path, { headers: { Authorization: 'Bearer ' + token() } });
+  if (!r.ok) { if (r.status === 403) window.location='/login'; return null; }
+  return r.json();
+}
+
+async function loadDashboard() {
+  const [users, regs, jobs, health] = await Promise.all([
+    apiGet('/admin/users?per_page=1'),
+    apiGet('/admin/registrations?per_page=1'),
+    apiGet('/admin/jobs?per_page=1'),
+    apiGet('/admin/health'),
+  ]);
+  if (!users) return;
+
+  const activeUsers = await apiGet('/admin/users?status=active&per_page=1');
+  document.getElementById('card-active-users').textContent = activeUsers?.total ?? '—';
+
+  document.getElementById('card-jobs-today').textContent = jobs?.total ?? '—';
+  document.getElementById('card-pending').textContent = regs?.total ?? '—';
+
+  const pong = health?.pong;
+  const wsEl = document.getElementById('card-worker-status');
+  if (!pong) { wsEl.textContent = '❓ بدون داده'; }
+  else {
+    const ageSec = (Date.now() - new Date(pong.ts).getTime()) / 1000;
+    wsEl.textContent = ageSec < 120 ? '✅ آنلاین' : '⚠️ تأخیر';
+  }
+
+  const audit = await apiGet('/admin/audit?per_page=10');
+  const tbody = document.getElementById('audit-recent');
+  tbody.innerHTML = '';
+  (audit?.entries ?? []).forEach(e => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="num">${e.created_at?.slice(0,19).replace('T',' ') ?? ''}</td>
+      <td>${e.action}</td><td>${e.target_id ?? ''}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+loadDashboard();
+</script>
+{% endblock %}

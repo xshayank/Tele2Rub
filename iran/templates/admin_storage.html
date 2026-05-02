@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}ذخیره‌سازی — RubeTunes{% endblock %}
+{% block content %}
+<h1>مدیریت ذخیره‌سازی</h1>
+<div class="card" id="summary-card">
+  <div style="display:flex;gap:2rem;flex-wrap:wrap">
+    <div><div style="color:var(--muted);font-size:0.85rem">تعداد آبجکت‌ها</div><div style="font-size:1.5rem;font-weight:700" id="total-objects">—</div></div>
+    <div><div style="color:var(--muted);font-size:0.85rem">حجم کل</div><div style="font-size:1.5rem;font-weight:700" id="total-bytes">—</div></div>
+  </div>
+</div>
+<div class="card">
+  <h2>آبجکت‌ها</h2>
+  <table>
+    <thead><tr><th>کلید</th><th>حجم (بایت)</th><th>آخرین تغییر</th></tr></thead>
+    <tbody id="objects-tbody">
+      <tr><td colspan="3" style="color:var(--muted)">در حال بارگذاری…</td></tr>
+    </tbody>
+  </table>
+</div>
+<div id="action-result" style="display:none" class="alert"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const token = () => sessionStorage.getItem('rt_access_token');
+
+function formatBytes(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+  return (b/1048576).toFixed(1) + ' MB';
+}
+
+async function load() {
+  const r = await fetch('/admin/storage', { headers: { Authorization: 'Bearer ' + token() } });
+  if (r.status === 403) { window.location = '/login'; return; }
+  const data = await r.json();
+  document.getElementById('total-objects').textContent = data.total_objects;
+  document.getElementById('total-bytes').textContent = formatBytes(data.total_bytes);
+  const tbody = document.getElementById('objects-tbody');
+  tbody.innerHTML = '';
+  (data.objects ?? []).forEach(o => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="num">${o.key}</td><td class="num">${formatBytes(o.size)}</td><td class="num">${o.last_modified?.slice(0,16).replace('T',' ') ?? ''}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+load();
+</script>
+{% endblock %}

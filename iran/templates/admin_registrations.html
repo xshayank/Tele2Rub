@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}ثبت‌نام‌های در انتظار — RubeTunes{% endblock %}
+{% block content %}
+<h1>ثبت‌نام‌های در انتظار تأیید</h1>
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>نام</th>
+        <th>ایمیل</th>
+        <th>تاریخ</th>
+        <th>یادداشت</th>
+        <th>عملیات</th>
+      </tr>
+    </thead>
+    <tbody id="regs-tbody">
+      <tr><td colspan="5" style="color:var(--muted)">در حال بارگذاری…</td></tr>
+    </tbody>
+  </table>
+</div>
+<div id="action-result" style="display:none" class="alert"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const token = () => sessionStorage.getItem('rt_access_token');
+
+async function apiReq(method, path, body) {
+  const opts = { method, headers: { Authorization: 'Bearer ' + token() } };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  if (r.status === 403) { window.location = '/login'; return null; }
+  return r.ok ? r.json() : null;
+}
+
+async function load() {
+  const data = await apiReq('GET', '/admin/registrations?per_page=100');
+  if (!data) return;
+  const tbody = document.getElementById('regs-tbody');
+  tbody.innerHTML = '';
+  if (!data.registrations.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">هیچ ثبت‌نامی در انتظار نیست.</td></tr>';
+    return;
+  }
+  data.registrations.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${r.display_name}</td>
+      <td>${r.email}</td>
+      <td class="num">${r.created_at?.slice(0,10) ?? ''}</td>
+      <td>${r.notes ?? ''}</td>
+      <td style="display:flex;gap:0.4rem">
+        <button class="btn btn-primary" onclick="review('${r.id}','approve')">تأیید</button>
+        <button class="btn btn-danger" onclick="review('${r.id}','reject')">رد</button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function review(id, action) {
+  const res = await apiReq('PATCH', `/admin/registrations/${id}`, { action });
+  const el = document.getElementById('action-result');
+  el.style.display = '';
+  if (res) { el.className = 'alert alert-success'; el.textContent = `عملیات ${action} موفق بود.`; load(); }
+  else { el.className = 'alert alert-error'; el.textContent = 'خطا در انجام عملیات.'; }
+}
+
+load();
+</script>
+{% endblock %}

@@ -20,6 +20,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from iran.api.admin import router as admin_router
 from iran.api.auth import router as auth_router
 from iran.api.health import router as health_router
 from iran.api.jobs import router as jobs_router
@@ -144,7 +145,7 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
         )
 
     async def on_admin_ack(msg: AdminAck) -> None:
-        """Log admin.ack and append an audit_log entry."""
+        """Log admin.ack, append audit_log entry, and persist effective_config."""
         logger.info(
             "admin.ack received",
             extra={
@@ -164,9 +165,18 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
                 },
             )
             session.add(entry)
+            # Persist effective_config into settings table when ack is ok
+            if msg.status == "ok" and msg.acked_type == "admin.settings.update" and msg.effective_config:
+                for key, value in msg.effective_config.items():
+                    existing = await session.get(Setting, key)
+                    if existing is None:
+                        session.add(Setting(key=key, value=str(value)))
+                    else:
+                        existing.value = str(value)
+                        existing.updated_at = datetime.now(tz=timezone.utc)
 
     async def on_health_pong(msg: HealthPong) -> None:
-        """Persist the health pong payload to the settings table."""
+        """Persist the health pong payload to the settings table and signal pending pings."""
         payload_json = json.dumps(
             {
                 "request_id": msg.request_id,
@@ -194,6 +204,11 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
                 "queue_depth": msg.queue_depth,
             },
         )
+        # Signal any endpoint waiting for this specific request_id
+        pending_pings: dict = getattr(app.state, "pending_pings", {})
+        event = pending_pings.get(msg.request_id)
+        if event is not None:
+            event.set()
 
     return {
         "job.accepted": on_job_accepted,
@@ -230,6 +245,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # ------------------------------------------------------------------
     app.state.event_bus = make_event_bus()
     app.state.s2_client = make_s2_client(settings)
+    app.state.pending_pings = {}  # request_id → asyncio.Event (health ping correlation)
 
     rubika_config = IranRubikaConfig(
         RUBIKA_SESSION_IRAN=settings.RUBIKA_SESSION_IRAN,
@@ -299,6 +315,7 @@ def create_app(settings: IranSettings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(jobs_router)
+    app.include_router(admin_router)
 
     return app
 

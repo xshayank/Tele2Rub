@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}سلامت Worker — RubeTunes{% endblock %}
+{% block content %}
+<h1>سلامت Kharej Worker</h1>
+
+<div id="stale-banner" style="display:none" class="alert alert-error">
+  ⚠️ آخرین داده بیش از ۲ دقیقه قبل بود.
+</div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+    <h2 style="margin:0">وضعیت فعلی</h2>
+    <button class="btn btn-primary" onclick="pingNow()" id="ping-btn">🔔 Ping الان</button>
+  </div>
+  <div id="health-data" style="color:var(--muted)">در حال بارگذاری…</div>
+</div>
+
+<div class="card" id="providers-card" style="display:none">
+  <h2>وضعیت پرووایدرها</h2>
+  <table>
+    <thead><tr><th>نام</th><th>وضعیت</th><th>پاسخ (ms)</th></tr></thead>
+    <tbody id="providers-tbody"></tbody>
+  </table>
+</div>
+
+<div class="card" id="cb-card" style="display:none">
+  <h2>Circuit Breakers</h2>
+  <table>
+    <thead><tr><th>کلید</th><th>وضعیت</th><th>خطاهای متوالی</th></tr></thead>
+    <tbody id="cb-tbody"></tbody>
+  </table>
+</div>
+
+<div id="ping-result" style="display:none;margin-top:1rem" class="alert"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const token = () => sessionStorage.getItem('rt_access_token');
+
+async function apiReq(method, path) {
+  const r = await fetch(path, { method, headers: { Authorization: 'Bearer ' + token() } });
+  if (r.status === 403) { window.location = '/login'; return null; }
+  return r.ok ? r.json() : null;
+}
+
+async function load() {
+  const data = await apiReq('GET', '/admin/health');
+  if (!data) return;
+  renderPong(data.pong);
+}
+
+function renderPong(pong) {
+  const el = document.getElementById('health-data');
+  if (!pong) { el.textContent = 'هیچ داده‌ای موجود نیست.'; return; }
+  const ageSec = (Date.now() - new Date(pong.ts).getTime()) / 1000;
+  document.getElementById('stale-banner').style.display = ageSec > 120 ? '' : 'none';
+  el.innerHTML = `
+    <dl style="display:grid;grid-template-columns:auto 1fr;gap:0.3rem 1rem">
+      <dt style="color:var(--muted)">نسخه Worker</dt><dd>${pong.worker_version}</dd>
+      <dt style="color:var(--muted)">عمق صف</dt><dd>${pong.queue_depth}</dd>
+      <dt style="color:var(--muted)">آپتایم</dt><dd>${pong.uptime_sec}s</dd>
+      <dt style="color:var(--muted)">دیسک آزاد</dt><dd>${pong.disk_free_gb?.toFixed(1)} GB</dd>
+      <dt style="color:var(--muted)">آخرین به‌روزرسانی</dt><dd class="num">${pong.ts?.slice(0,19).replace('T',' ')}</dd>
+    </dl>`;
+
+  if (pong.providers?.length) {
+    document.getElementById('providers-card').style.display = '';
+    const tb = document.getElementById('providers-tbody');
+    tb.innerHTML = '';
+    pong.providers.forEach(p => {
+      const tr = document.createElement('tr');
+      const color = p.status === 'up' ? 'var(--success)' : p.status === 'degraded' ? 'var(--warning)' : 'var(--danger)';
+      tr.innerHTML = `<td>${p.name}</td><td style="color:${color}">${p.status}</td><td class="num">${p.response_ms ?? '—'}</td>`;
+      tb.appendChild(tr);
+    });
+  }
+
+  if (pong.circuit_breakers?.length) {
+    document.getElementById('cb-card').style.display = '';
+    const tb = document.getElementById('cb-tbody');
+    tb.innerHTML = '';
+    pong.circuit_breakers.forEach(cb => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${cb.key}</td><td>${cb.state}</td><td class="num">${cb.consecutive_failures}</td>`;
+      tb.appendChild(tr);
+    });
+  }
+}
+
+async function pingNow() {
+  const btn = document.getElementById('ping-btn');
+  btn.disabled = true; btn.textContent = '⏳ در انتظار…';
+  const res = await apiReq('POST', '/admin/health/ping');
+  btn.disabled = false; btn.textContent = '🔔 Ping الان';
+  const el = document.getElementById('ping-result');
+  el.style.display = '';
+  if (res?.status === 'ok') {
+    el.className = 'alert alert-success';
+    el.textContent = 'پاسخ دریافت شد!';
+    renderPong(res.pong);
+  } else if (res?.status === 'timeout') {
+    el.className = 'alert alert-error';
+    el.textContent = 'زمان انتظار برای پاسخ به پایان رسید.';
+  } else {
+    el.className = 'alert alert-error';
+    el.textContent = 'خطا در ارسال ping.';
+  }
+}
+
+load();
+</script>
+{% endblock %}

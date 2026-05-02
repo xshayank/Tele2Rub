@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}گزارش فعالیت — RubeTunes{% endblock %}
+{% block content %}
+<h1>گزارش فعالیت</h1>
+<div class="card">
+  <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
+    <input type="text" id="filter-action" placeholder="نوع اقدام…" style="width:auto" oninput="loadAudit()">
+    <input type="date" id="filter-since" oninput="loadAudit()">
+    <input type="date" id="filter-until" oninput="loadAudit()">
+    <button class="btn btn-secondary" onclick="exportCSV()">⬇️ خروجی CSV</button>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>زمان</th>
+        <th>اقدام</th>
+        <th>هدف</th>
+        <th>IP</th>
+      </tr>
+    </thead>
+    <tbody id="audit-tbody">
+      <tr><td colspan="4" style="color:var(--muted)">در حال بارگذاری…</td></tr>
+    </tbody>
+  </table>
+  <div id="pagination" class="pagination"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const token = () => sessionStorage.getItem('rt_access_token');
+let currentPage = 1;
+let lastData = null;
+
+async function loadAudit() {
+  const action = document.getElementById('filter-action').value;
+  const since = document.getElementById('filter-since').value;
+  const until = document.getElementById('filter-until').value;
+  let url = `/admin/audit?page=${currentPage}&per_page=50`;
+  if (action) url += `&action=${encodeURIComponent(action)}`;
+  if (since) url += `&since=${since}`;
+  if (until) url += `&until=${until}`;
+  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token() } });
+  if (r.status === 403) { window.location = '/login'; return; }
+  lastData = await r.json();
+  const tbody = document.getElementById('audit-tbody');
+  tbody.innerHTML = '';
+  lastData.entries.forEach(e => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="num">${e.created_at?.slice(0,19).replace('T',' ') ?? ''}</td>
+      <td>${e.action}</td><td>${e.target_id ?? ''}</td><td>${e.ip_addr ?? ''}</td>`;
+    tbody.appendChild(tr);
+  });
+  const pages = Math.ceil(lastData.total / 50);
+  const pg = document.getElementById('pagination');
+  pg.innerHTML = '';
+  for (let i = 1; i <= Math.min(pages, 20); i++) {
+    const a = document.createElement('a');
+    a.href = '#'; a.textContent = i;
+    if (i === currentPage) a.className = 'current';
+    a.onclick = e => { e.preventDefault(); currentPage = i; loadAudit(); };
+    pg.appendChild(a);
+  }
+}
+
+function exportCSV() {
+  if (!lastData) return;
+  const rows = [['timestamp','action','target_id','ip_addr']];
+  lastData.entries.forEach(e => rows.push([e.created_at, e.action, e.target_id ?? '', e.ip_addr ?? '']));
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'audit.csv';
+  a.click();
+}
+
+loadAudit();
+</script>
+{% endblock %}
