@@ -227,7 +227,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialise DI objects
     # ------------------------------------------------------------------
     app.state.event_bus = make_event_bus()
-    app.state.s2_client = make_s2_client()
+    app.state.s2_client = make_s2_client(settings)
 
     rubika_config = IranRubikaConfig(
         RUBIKA_SESSION_IRAN=settings.RUBIKA_SESSION_IRAN,
