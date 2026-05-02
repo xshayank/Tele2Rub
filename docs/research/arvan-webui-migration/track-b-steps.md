@@ -146,7 +146,9 @@
 
 ---
 
-## Step 3 — Database Models + Alembic Migrations
+## Step 3 — Database Models + Alembic Migrations ✅
+
+> ✅ **Done** — `iran/db/models.py` implements all six SQLAlchemy 2 ORM models (`User`, `Job`, `RefreshToken`, `AuditLog`, `Setting`, `Registration`) with `MappedColumn` typing, JSON columns for `s2_keys`/`metadata_json`/`payload`, FK constraints, and bidirectional relationships. `iran/db/engine.py` provides a lazy async engine + `AsyncSessionLocal` session factory (via `__getattr__`) and a `get_async_session()` context manager with automatic rollback. `iran/db/migrations/` contains the Alembic configuration (`alembic.ini`, `env.py` with async-engine support, `script.py.mako`) and the initial migration (`versions/initial_schema.py`) that creates all six tables. `tests/test_iran_step3_db.py` adds 48 tests covering model importability, `Base.metadata.create_all`, insert/select round-trips for every table, default column values, JSON column round-trips, unique-constraint enforcement, FK relationships, Alembic migration metadata, and rollback behaviour.
 
 **Goal**: Persistent storage for users, jobs, audit log, settings, refresh tokens, and registration approvals.
 
