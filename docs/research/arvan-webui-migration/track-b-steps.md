@@ -287,7 +287,9 @@
 
 ---
 
-## Step 5 — Iran-Side Rubika Transport Client
+## Step 5 — Iran-Side Rubika Transport Client ✅
+
+> ✅ **Done** — `iran/rubika_client.py` implements `IranRubikaConfig` (pydantic-settings, `IRAN_` prefix), `IranRubikaClient` (send, register_handler, start, stop), `FakeRubikaTransport` (test double with inject_raw/inject_msg/simulate_disconnect), `RubikaSendError`, `_LRUSet` (de-duplication, max 2 000 entries), and `_RubpyTransport` (real rubpy wrapper). `iran/event_bus.py` implements the real `EventBus` with `subscribe` (async context manager yielding a queue), `publish` (fan-out via `put_nowait`), `unsubscribe`, and `close` (None sentinel). `iran/main.py` wires six message handlers in `_make_handlers` (`job.accepted`, `job.progress`, `job.completed`, `job.failed`, `admin.ack`, `health.pong`) and starts/stops the Rubika client in the ASGI lifespan. Supervisor reconnects with 1 s → 60 s exponential back-off ±20 % jitter. `tests/test_iran_step5_rubika_client.py` adds 59 tests covering importability, config, transport basics, dispatch, malformed messages, de-duplication, reconnect, outbound send, EventBus, contract fixture round-trips, LRU eviction, and DB handler integration.
 
 **Goal**: A single `rubpy` session that:
 - **Sends** outbound messages to the Kharej account (`JobCreate`, `JobCancel`, admin control messages, `HealthPing`).
