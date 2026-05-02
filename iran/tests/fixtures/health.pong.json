@@ -1,0 +1,37 @@
+{
+  "v": 1,
+  "type": "health.pong",
+  "ts": "2026-04-26T17:05:56Z",
+  "job_id": null,
+  "request_id": "req-0000-1111-2222-3333",
+  "worker_version": "2.0.0",
+  "queue_depth": 3,
+  "circuit_breakers": [
+    {
+      "key": "spotify",
+      "state": "closed",
+      "consecutive_failures": 0,
+      "seconds_until_close": null
+    },
+    {
+      "key": "youtube",
+      "state": "open",
+      "consecutive_failures": 5,
+      "seconds_until_close": 30
+    }
+  ],
+  "providers": [
+    {
+      "name": "spotify",
+      "status": "up",
+      "response_ms": 120
+    },
+    {
+      "name": "youtube",
+      "status": "degraded",
+      "response_ms": 850
+    }
+  ],
+  "disk_free_gb": 42.5,
+  "uptime_sec": 3600
+}

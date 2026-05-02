@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "admin.ack",
+  "ts": "2026-04-26T17:05:56Z",
+  "job_id": null,
+  "acked_type": "admin.settings.update",
+  "status": "ok",
+  "detail": "Settings applied successfully.",
+  "effective_config": {
+    "MAX_JOBS_PER_HOUR": "20"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "type": "admin.ack",
+  "ts": "2026-04-26T17:05:56Z",
+  "job_id": null,
+  "acked_type": "admin.clearcache",
+  "status": "error",
+  "detail": "Cache flush failed: permission denied.",
+  "effective_config": null
+}

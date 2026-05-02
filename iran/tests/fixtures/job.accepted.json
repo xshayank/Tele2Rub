@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "type": "job.accepted",
+  "ts": "2026-04-26T17:05:56Z",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "worker_version": "2.0.0",
+  "queue_position": 1
+}
