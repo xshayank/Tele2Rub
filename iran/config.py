@@ -18,6 +18,14 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Guard against accidental contract upgrades — bump iran/ code if v changes.
+from kharej.contracts import CONTRACT_VERSION as _CONTRACT_VERSION
+
+assert _CONTRACT_VERSION == 1, (  # noqa: S101
+    f"kharej.contracts.CONTRACT_VERSION is {_CONTRACT_VERSION!r}; "
+    "update iran/ code to handle the new version before proceeding."
+)
+
 
 class IranSettings(BaseSettings):
     """Runtime configuration for the Iran VPS service.
