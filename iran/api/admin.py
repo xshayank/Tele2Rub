@@ -113,7 +113,7 @@ class ClearcacheRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _rubika(request: Request):  # type: ignore[return]
+def _rubika(request: Request) -> Any:
     """Return the rubika_client from app.state (raises 503 if missing)."""
     client = getattr(request.app.state, "rubika_client", None)
     if client is None:
@@ -536,12 +536,12 @@ async def update_settings(
 @router.post("/settings/clearcache")
 async def clearcache(
     request: Request,
-    body: ClearcacheRequest | None = None,
+    body: ClearcacheRequest = ClearcacheRequest(),
     session: AsyncSession = Depends(get_db),
     admin: User = Depends(_require_admin),
 ) -> dict:
     """Send ``AdminClearcache`` to the Kharej Worker."""
-    target = (body.target if body else None) or "all"
+    target = body.target or "all"
     if target not in ("lru", "isrc", "all"):
         raise HTTPException(status_code=422, detail=f"Invalid target: {target!r}")
 

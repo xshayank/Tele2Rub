@@ -618,13 +618,10 @@ class TestAdminHealth:
     async def test_health_ping_timeout(self, admin_client):
         """POST /admin/health/ping returns timeout when no pong arrives."""
         import asyncio as _asyncio
-
-        orig = _asyncio.wait_for
+        import unittest.mock as _mock
 
         async def fast_timeout(coro, timeout):
             raise _asyncio.TimeoutError()
-
-        import unittest.mock as _mock
 
         with _mock.patch("asyncio.wait_for", side_effect=fast_timeout):
             r = await admin_client.post("/admin/health/ping")
