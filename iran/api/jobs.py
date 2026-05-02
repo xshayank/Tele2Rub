@@ -23,7 +23,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -422,7 +422,7 @@ async def get_job(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response, response_model=None)
 async def cancel_job(
     job_id: str,
     request: Request,

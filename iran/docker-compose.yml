@@ -1,0 +1,62 @@
+# iran/docker-compose.yml — Reproducible Iran VPS deployment (Track B, Step 11).
+#
+# Usage:
+#   cp iran/.env.example iran/.env   # fill in secrets
+#   docker compose -f iran/docker-compose.yml up -d
+#
+# Services:
+#   api    — FastAPI application (uvicorn)
+#   db     — PostgreSQL 15
+#   nginx  — Reverse proxy + TLS termination
+
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: iran/Dockerfile
+    restart: unless-stopped
+    env_file: iran/.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/iran/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rubetunes_iran
+      POSTGRES_USER: iran
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iran"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

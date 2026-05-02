@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -384,7 +385,7 @@ def _job_dict(j: Job) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/jobs/{job_id}", status_code=204)
+@router.delete("/jobs/{job_id}", status_code=204, response_class=Response, response_model=None)
 async def force_cancel_job(
     job_id: str,
     request: Request,
@@ -441,7 +442,7 @@ async def get_storage(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/storage/{job_id}", status_code=204)
+@router.delete("/storage/{job_id}", status_code=204, response_class=Response, response_model=None)
 async def delete_storage(
     job_id: str,
     request: Request,

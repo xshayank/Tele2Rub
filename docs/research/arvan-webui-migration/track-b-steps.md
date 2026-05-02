@@ -1003,7 +1003,7 @@ On `status=error`, write an error entry to `audit_log` and surface it in the UI.
 
 ---
 
-## Step 11 — Deployment
+## Step 11 — Deployment ✅
 
 **Goal**: Reproducible Iran VPS deployment from a single `docker compose up -d`.
 
