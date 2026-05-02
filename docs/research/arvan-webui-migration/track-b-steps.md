@@ -96,7 +96,9 @@
 
 ---
 
-## Step 2 — Contracts Mirror (Joint with Track A)
+## Step 2 — Contracts Mirror (Joint with Track A) ✅
+
+> ✅ **Done** — `iran/contracts.py` shim implemented, re-exporting all Pydantic models, encode/decode helpers, S2 key helpers, and constants from `kharej/contracts.py`. `CONTRACT_VERSION == 1` assertion added to `iran/config.py`. `tests/test_iran_step2_contracts.py` adds 74 tests covering importability, encode→decode round-trips for every message type (including single/batch/zipping variants), wire-format field verification, type dispatch, error handling for malformed inputs, S2 key helpers, and oversize message rejection. `from iran.contracts import JobCreate` works without importing kharej directly.
 
 **Goal**: Import the frozen contracts from Track A so Iran-side code uses the *identical* Pydantic models, encode/decode helpers, and S2 key helpers — no duplication.
 
