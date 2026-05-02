@@ -103,7 +103,7 @@ $EDITOR iran/.env
 All Iran settings are read via `pydantic-settings` with the **`IRAN_`** prefix
 (source: `iran/config.py`).  This means every variable in `.env` must be prefixed with `IRAN_`.
 
-### 4b. Minimal `.env.iran` for local development
+### 4b. Minimal `iran/.env` for local development
 
 ```dotenv
 # iran/.env  (local dev — never commit this file)
@@ -175,10 +175,10 @@ Kharej settings come from **two sources** (lower priority first):
 The Rubika and S2 configs use their own, unprefixed env var names (source: `kharej/rubika_client.py`
 and `kharej/s2_client.py`).
 
-### 5a. Minimal `.env.kharej` for local development
+### 5a. Minimal `kharej/.env` for local development
 
 ```dotenv
-# kharej/.env.kharej  (local dev — never commit this file)
+# kharej/.env  (local dev — never commit this file)
 
 # ── Rubika transport ──────────────────────────────────────────────────────────
 # Session name for the Kharej-side Rubika account (rubpy session file)
@@ -269,7 +269,7 @@ python -m iran --check-config
 ```bash
 cd /path/to/RubeTunes
 source .venv/bin/activate
-export $(grep -v '^#' kharej/.env.kharej | xargs)
+export $(grep -v '^#' kharej/.env | xargs)
 
 python -m kharej
 # or equivalently:
