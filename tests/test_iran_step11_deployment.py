@@ -259,8 +259,6 @@ class TestRunMigrationsNoop:
     @pytest.mark.asyncio
     async def test_run_migrations_noop_on_empty_url(self, monkeypatch):
         """No-op when IRAN_DATABASE_URL is not set — must not raise."""
-        import os
-
         monkeypatch.delenv("IRAN_DATABASE_URL", raising=False)
 
         from iran.config import get_settings

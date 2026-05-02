@@ -1,7 +1,11 @@
 # iran/docker-compose.yml — Reproducible Iran VPS deployment (Track B, Step 11).
 #
 # Usage:
-#   cp iran/.env.example iran/.env   # fill in secrets
+#   cd iran && cp .env.example .env   # fill in secrets
+#   docker compose up -d
+#
+# Or from the repository root:
+#   cp iran/.env.example iran/.env
 #   docker compose -f iran/docker-compose.yml up -d
 #
 # Services:
@@ -17,7 +21,7 @@ services:
       context: ..
       dockerfile: iran/Dockerfile
     restart: unless-stopped
-    env_file: iran/.env
+    env_file: .env
     ports:
       - "8000:8000"
     depends_on:

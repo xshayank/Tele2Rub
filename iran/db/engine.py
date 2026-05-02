@@ -106,7 +106,7 @@ async def run_migrations() -> None:
         from iran.config import get_settings
 
         url = get_settings().DATABASE_URL
-    except Exception:  # noqa: BLE001
+    except (ImportError, AttributeError, ValueError):
         url = os.environ.get("IRAN_DATABASE_URL", "")
 
     if not url:
