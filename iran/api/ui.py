@@ -57,6 +57,12 @@ async def pending_page(request: Request) -> HTMLResponse:
 @router.get("/ui/jobs/{job_id}", response_class=HTMLResponse, include_in_schema=False)
 async def job_page(request: Request, job_id: str) -> HTMLResponse:
     """Job progress + download page."""
+    import uuid as _uuid
+    try:
+        _uuid.UUID(job_id)
+    except ValueError:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Job not found.")
     return templates.TemplateResponse(request, "job.html", {"job_id": job_id})
 
 

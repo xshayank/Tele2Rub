@@ -230,7 +230,9 @@ class TestUIPageContent:
     @pytest.mark.asyncio
     async def test_pages_use_rtl_layout(self, client):
         """All pages must include dir=rtl for Persian RTL layout."""
-        for path in ["/", "/login", "/register", "/library", "/settings"]:
+        job_id = str(uuid.uuid4())
+        paths = ["/", "/login", "/register", "/pending", "/library", "/settings", f"/ui/jobs/{job_id}"]
+        for path in paths:
             resp = await client.get(path)
             assert 'dir="rtl"' in resp.text, f"RTL not found in {path}"
 
@@ -254,7 +256,13 @@ class TestUIPageContent:
 # ---------------------------------------------------------------------------
 
 
-class TestExistingAPIUnchanged:
+    @pytest.mark.asyncio
+    async def test_job_page_invalid_uuid_returns_404(self, client):
+        """Non-UUID job_id should return 404 (defense-in-depth)."""
+        resp = await client.get("/ui/jobs/not-a-uuid")
+        assert resp.status_code == 404
+
+
     """Ensure that Step 8 changes do not break the existing JSON API routes."""
 
     @pytest.mark.asyncio

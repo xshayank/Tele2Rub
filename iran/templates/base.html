@@ -156,7 +156,7 @@
     {% block content %}{% endblock %}
   </main>
   <script>
-    // Minimal auth state: check localStorage for access_token
+    // Minimal auth state: check sessionStorage for access_token
     (function () {
       var token = sessionStorage.getItem('rt_access_token');
       if (token) {
