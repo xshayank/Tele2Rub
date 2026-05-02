@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "type": "admin.cookies.update",
+  "ts": "2026-04-26T17:05:56Z",
+  "job_id": null,
+  "s2_key": "tmp/cookies.txt",
+  "sha256": "feedcafe"
+}

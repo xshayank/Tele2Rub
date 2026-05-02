@@ -1,0 +1,24 @@
+{
+  "v": 1,
+  "type": "job.completed",
+  "ts": "2026-04-26T17:05:56Z",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "parts": [
+    {
+      "key": "media/550e8400-e29b-41d4-a716-446655440000/Album-part1.zip",
+      "size": 52428800,
+      "mime": "application/zip",
+      "sha256": "aabbcc"
+    },
+    {
+      "key": "media/550e8400-e29b-41d4-a716-446655440000/Album-part2.zip",
+      "size": 31457280,
+      "mime": "application/zip",
+      "sha256": "ddeeff"
+    }
+  ],
+  "metadata": {
+    "collection": "Top 50 Global",
+    "tracks": 50
+  }
+}

@@ -1,0 +1,17 @@
+# Ignore runtime-generated files but keep the placeholder files.
+
+# State and log directories — keep .gitkeep, ignore everything else
+state/*
+!state/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Python bytecode
+*.pyc
+__pycache__/
+
+# Pytest cache
+.pytest_cache/
+
+# Log files
+*.log

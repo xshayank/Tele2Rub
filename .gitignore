@@ -9,3 +9,4 @@ downloads/
 *.session-journal
 rubika_session.rp
 *.egg-info/
+.coverage

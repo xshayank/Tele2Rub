@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% block title %}پیشرفت کار — RubeTunes{% endblock %}
+{% block head %}
+<style>
+  #phase-badge { margin-right: 0.5rem; }
+  #download-list { margin-top: 1rem; }
+  .download-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    margin-bottom: 0.5rem;
+    background: var(--bg);
+  }
+  .download-card .filename { font-weight: 500; margin-bottom: 0.2rem; }
+  .download-card .meta { font-size: 0.8rem; color: var(--muted); direction: ltr; text-align: left; }
+  #error-box { margin-top: 1rem; }
+</style>
+{% endblock %}
+{% block content %}
+<div style="margin-bottom:1rem">
+  <a href="/library">← کتابخانه</a>
+</div>
+<div class="card">
+  <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:1rem">
+    <h1 style="margin:0">وضعیت کار</h1>
+    <span id="status-badge" class="badge badge-pending">در انتظار</span>
+    <span id="phase-badge" class="badge" style="display:none"></span>
+  </div>
+  <p id="job-meta" style="font-size:0.85rem; color:var(--muted)">شناسه: <span class="num">{{ job_id }}</span></p>
+  <progress id="progress-bar" value="0" max="100"></progress>
+  <div id="progress-text" style="font-size:0.85rem; color:var(--muted); margin-bottom:0.5rem" class="num"></div>
+  <div id="track-text" style="font-size:0.85rem; color:var(--muted); margin-bottom:0.5rem"></div>
+  <div id="error-box"></div>
+  <div id="download-list"></div>
+  <div style="margin-top:1rem">
+    <button id="cancel-btn" class="btn btn-danger" style="display:none">لغو کار</button>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+  var JOB_ID = {{ job_id | tojson }};
+  var token = sessionStorage.getItem('rt_access_token');
+  if (!token) { window.location.href = '/login'; return; }
+
+  var statusBadge = document.getElementById('status-badge');
+  var phaseBadge = document.getElementById('phase-badge');
+  var progressBar = document.getElementById('progress-bar');
+  var progressText = document.getElementById('progress-text');
+  var trackText = document.getElementById('track-text');
+  var errorBox = document.getElementById('error-box');
+  var downloadList = document.getElementById('download-list');
+  var cancelBtn = document.getElementById('cancel-btn');
+
+  var statusLabels = {
+    'pending': 'در انتظار', 'accepted': 'پذیرفته شد',
+    'running': 'در حال اجرا', 'completed': 'تکمیل شد',
+    'failed': 'خطا', 'cancelled': 'لغو شد'
+  };
+  var phaseLabels = {
+    'downloading': 'دانلود', 'processing': 'پردازش',
+    'uploading': 'آپلود', 'zipping': 'فشرده‌سازی'
+  };
+  var badgeClass = {
+    'pending': 'badge-pending', 'accepted': 'badge-pending',
+    'running': 'badge-running', 'completed': 'badge-completed',
+    'failed': 'badge-failed', 'cancelled': 'badge-cancelled'
+  };
+  var errorMessages = {
+    'no_source_available': 'منبع دانلودی یافت نشد.',
+    's2_upload_failed': 'خطا در آپلود. لطفاً دوباره امتحان کنید.',
+    'download_timeout': 'دانلود به پایان وقت رسید.',
+    'rate_limited': 'محدودیت نرخ از طرف منبع.',
+    'invalid_url': 'لینک نامعتبر است.',
+    'access_denied': 'دسترسی رد شد.',
+    'disk_space_error': 'فضای دیسک ناکافی.',
+    'blocked': 'حساب شما مسدود شده است.',
+    'not_whitelisted': 'حساب شما در لیست سفید نیست.',
+    'unsupported_platform': 'پلتفرم پشتیبانی نمی‌شود.',
+    'duplicate_job': 'این کار قبلاً در حال انجام است.',
+    'cancelled': 'کار لغو شد.',
+    'internal_error': 'خطای داخلی. لطفاً دوباره امتحان کنید.'
+  };
+
+  function formatBytes(bytes) {
+    if (!bytes) return '';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  }
+
+  function renderDownloads(parts) {
+    if (!parts || parts.length === 0) return;
+    var html = '<h2>دانلود فایل‌ها</h2>';
+    if (parts.length > 1) {
+      html += '<p style="font-size:0.85rem;color:var(--muted);margin-bottom:0.75rem">برای فایل‌های چند بخشی از 7-Zip برای استخراج استفاده کنید.</p>';
+    }
+    parts.forEach(function(part, i) {
+      var filename = part.key ? part.key.split('/').pop() : ('بخش ' + (i + 1));
+      var size = formatBytes(part.size);
+      var mime = part.mime_type || '';
+      html += '<div class="download-card">';
+      html += '<div><div class="filename">' + filename + '</div>';
+      html += '<div class="meta">' + size + (mime ? ' · ' + mime : '') + '</div></div>';
+      html += '<a href="/jobs/' + JOB_ID + '/download?part=' + i + '" class="btn btn-primary" target="_blank">دانلود</a>';
+      html += '</div>';
+    });
+    downloadList.innerHTML = html;
+  }
+
+  function applyUpdate(data) {
+    var type = data.type || data.status;
+    var st = data.status || (type === 'job.completed' ? 'completed' : type === 'job.failed' ? 'failed' : null);
+    if (data.type === 'job.accepted') st = 'accepted';
+    if (data.type === 'job.progress') st = 'running';
+    if (data.type === 'job.completed') st = 'completed';
+    if (data.type === 'job.failed') st = 'failed';
+
+    if (st) {
+      statusBadge.className = 'badge ' + (badgeClass[st] || '');
+      statusBadge.textContent = statusLabels[st] || st;
+      if (st === 'completed' || st === 'failed' || st === 'cancelled') {
+        cancelBtn.style.display = 'none';
+      } else {
+        cancelBtn.style.display = '';
+      }
+    }
+
+    if (data.phase) {
+      phaseBadge.style.display = '';
+      phaseBadge.textContent = phaseLabels[data.phase] || data.phase;
+    }
+
+    if (data.percent != null) {
+      progressBar.value = data.percent;
+      progressText.textContent = data.percent + '%' + (data.speed ? '  ·  ' + data.speed : '');
+    }
+    if (data.done_tracks != null && data.total_tracks != null) {
+      progressBar.value = Math.round(100 * data.done_tracks / data.total_tracks);
+      trackText.textContent = data.done_tracks + ' / ' + data.total_tracks + ' آهنگ';
+      if (data.current_track) trackText.textContent += '  —  ' + data.current_track;
+    }
+
+    if (data.type === 'job.completed' && data.parts) {
+      renderDownloads(data.parts);
+    }
+    if (data.type === 'job.failed') {
+      var code = data.error_code || 'internal_error';
+      var msg = errorMessages[code] || data.message || 'خطای ناشناخته';
+      errorBox.innerHTML = '<div class="alert alert-error">' + msg + '</div>';
+    }
+  }
+
+  // Load current job state first
+  fetch('/jobs/' + JOB_ID, { headers: { 'Authorization': 'Bearer ' + token } })
+    .then(function(r) {
+      if (r.status === 401) { window.location.href = '/login'; return null; }
+      if (r.status === 403 || r.status === 404) { window.location.href = '/library'; return null; }
+      return r.json();
+    })
+    .then(function(data) {
+      if (!data) return;
+      applyUpdate(data);
+      if (data.status === 'completed') {
+        // Fetch download parts
+        fetch('/jobs/' + JOB_ID + '/download', { headers: { 'Authorization': 'Bearer ' + token } })
+          .then(function(r) { return r.json(); })
+          .then(function(d) { if (d.parts) renderDownloads(d.parts); });
+        return; // No SSE needed
+      }
+      if (data.status === 'failed' || data.status === 'cancelled') return;
+      startSSE();
+    });
+
+  function startSSE() {
+    var url = '/jobs/' + JOB_ID + '/events';
+    var es = new EventSource(url + '?token=' + encodeURIComponent(token));
+    es.onmessage = function(e) {
+      try {
+        var data = JSON.parse(e.data);
+        applyUpdate(data);
+        if (data.type === 'job.completed') {
+          es.close();
+          // Fetch download list
+          fetch('/jobs/' + JOB_ID + '/download', { headers: { 'Authorization': 'Bearer ' + token } })
+            .then(function(r) { return r.json(); })
+            .then(function(d) { if (d.parts) renderDownloads(d.parts); });
+        }
+        if (data.type === 'job.failed' || data.type === 'job.cancelled') { es.close(); }
+      } catch (_) {}
+    };
+    es.onerror = function() { es.close(); };
+  }
+
+  cancelBtn.addEventListener('click', async function() {
+    cancelBtn.disabled = true;
+    var resp = await fetch('/jobs/' + JOB_ID, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (resp.ok || resp.status === 204) {
+      statusBadge.className = 'badge badge-cancelled';
+      statusBadge.textContent = 'لغو شد';
+      cancelBtn.style.display = 'none';
+    } else {
+      cancelBtn.disabled = false;
+    }
+  });
+})();
+</script>
+{% endblock %}

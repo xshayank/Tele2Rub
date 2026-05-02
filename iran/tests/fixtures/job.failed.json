@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "type": "job.failed",
+  "ts": "2026-04-26T17:05:56Z",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "error_code": "no_source_available",
+  "message": "No download source found for this track.",
+  "retryable": false
+}

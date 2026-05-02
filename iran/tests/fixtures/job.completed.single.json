@@ -1,0 +1,18 @@
+{
+  "v": 1,
+  "type": "job.completed",
+  "ts": "2026-04-26T17:05:56Z",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "parts": [
+    {
+      "key": "media/550e8400-e29b-41d4-a716-446655440000/Shape_of_You.mp3",
+      "size": 5242880,
+      "mime": "audio/mpeg",
+      "sha256": "abc123def456"
+    }
+  ],
+  "metadata": {
+    "title": "Shape of You",
+    "artist": "Ed Sheeran"
+  }
+}

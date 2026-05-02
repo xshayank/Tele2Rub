@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}در انتظار تأیید — RubeTunes{% endblock %}
+{% block content %}
+<div style="max-width: 480px; margin: 4rem auto;">
+  <div class="card" style="text-align:center">
+    <div style="font-size:3rem; margin-bottom:1rem">⏳</div>
+    <h1>در انتظار تأیید</h1>
+    <p style="color:var(--muted); margin-top:0.5rem">
+      درخواست ثبت‌نام شما دریافت شد. پس از تأیید توسط مدیر، می‌توانید وارد شوید.
+    </p>
+    <p style="margin-top:1.5rem">
+      <a href="/login" class="btn btn-secondary">بازگشت به صفحه ورود</a>
+    </p>
+  </div>
+</div>
+{% endblock %}
