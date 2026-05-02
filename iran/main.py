@@ -259,7 +259,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # ------------------------------------------------------------------
     logger.info("Iran service shutting down", extra={"event": "shutdown"})
     await app.state.event_bus.close()
-    await rubika_client.stop()
+    await app.state.rubika_client.stop()
 
 
 def create_app(settings: IranSettings | None = None) -> FastAPI:

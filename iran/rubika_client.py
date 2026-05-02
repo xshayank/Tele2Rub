@@ -151,7 +151,8 @@ class IranRubikaClient:
     ) -> None:
         self._config = config
         self._transport: _TransportProtocol | None = transport
-        self._handlers: dict[str, list[Callable]] = {}
+        # Each handler must be an async callable: async def handler(msg: AnyMessage) -> None
+        self._handlers: dict[str, list[Callable[..., Any]]] = {}
         self._dedup: _LRUSet = _LRUSet(maxsize=2000)
         self._running: bool = False
         self._loop_task: asyncio.Task | None = None

@@ -210,19 +210,14 @@ async def _drain() -> None:
 class TestDispatch:
     @pytest.mark.asyncio
     async def test_handler_called_for_registered_type(self, client_and_transport):
-        from iran.contracts import JobAccepted, encode
+        from iran.contracts import JobAccepted
 
         client, transport = client_and_transport
         received: list = []
 
-        client.register_handler("job.accepted", lambda m: received.append(m)
-                                 if asyncio.iscoroutine(None) else received.append(m))
-
-        # Use proper async handler
         async def _handler(msg):
             received.append(msg)
 
-        client._handlers.clear()
         client.register_handler("job.accepted", _handler)
 
         msg = JobAccepted(
