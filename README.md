@@ -382,6 +382,12 @@ Backend logic ported from
 
 ---
 
+### Running the Iran & Kharej servers locally
+
+See **[docs/how-to-run-iran-kharej.md](docs/how-to-run-iran-kharej.md)** for a complete guide
+covering prerequisites, environment variables, database setup, how to start both processes, and
+troubleshooting tips.
+
 ### Running tests
 
 ```bash
