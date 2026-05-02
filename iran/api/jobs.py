@@ -65,6 +65,7 @@ ALLOWED_DOMAINS: set[str] = {
 # ---------------------------------------------------------------------------
 
 ERROR_CODE_MESSAGES: dict[str, str] = {
+    # Primary error codes (from Step 7 spec)
     "no_source_available": "No download source found for this track.",
     "s2_upload_failed": "Storage upload failed. Please retry.",
     "download_timeout": "Download timed out. Please retry.",
@@ -79,7 +80,7 @@ ERROR_CODE_MESSAGES: dict[str, str] = {
     "cancelled": "Job was cancelled.",
     "internal_error": "An internal error occurred. Please retry.",
     "error": "An internal error occurred. Please retry.",
-    # Additional codes from contracts
+    # Additional codes defined in kharej.contracts.JobFailed
     "timeout": "The operation timed out. Please retry.",
     "not_implemented": "This feature is not yet implemented.",
     "shutdown": "The worker was shut down. Please retry.",
@@ -252,7 +253,9 @@ def _job_to_response(job: Job) -> dict[str, Any]:
         "speed": job.speed,
         "phase": job.phase,
         "error_code": job.error_code,
-        "error_message": ERROR_CODE_MESSAGES.get(job.error_code or "", job.error_msg),
+        "error_message": (
+            ERROR_CODE_MESSAGES.get(job.error_code) if job.error_code else job.error_msg
+        ),
         "s2_keys": job.s2_keys,
         "total_tracks": job.total_tracks,
         "done_tracks": job.done_tracks,
@@ -513,7 +516,9 @@ async def job_events(
             "type": "job.failed",
             "job_id": job_id,
             "error_code": job.error_code,
-            "message": ERROR_CODE_MESSAGES.get(job.error_code or "", job.error_msg or ""),
+            "message": (
+                ERROR_CODE_MESSAGES.get(job.error_code) if job.error_code else (job.error_msg or "")
+            ),
             "retryable": job.error_code not in ("blocked", "not_whitelisted", "invalid_url"),
         }
     elif job.status == "cancelled":
