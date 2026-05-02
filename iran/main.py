@@ -23,6 +23,7 @@ from fastapi import FastAPI
 from iran.api.auth import router as auth_router
 from iran.api.health import router as health_router
 from iran.api.jobs import router as jobs_router
+from iran.api.ui import router as ui_router
 from iran.config import IranSettings, get_settings
 from iran.event_bus import make_event_bus
 from iran.logging_setup import configure_logging
@@ -294,6 +295,7 @@ def create_app(settings: IranSettings | None = None) -> FastAPI:
     # ------------------------------------------------------------------
     # Routers
     # ------------------------------------------------------------------
+    app.include_router(ui_router)
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(jobs_router)

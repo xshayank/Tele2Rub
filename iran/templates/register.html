@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}ثبت‌نام — RubeTunes{% endblock %}
+{% block content %}
+<div style="max-width: 420px; margin: 4rem auto;">
+  <div class="card">
+    <h1>ثبت‌نام</h1>
+    <div id="msg"></div>
+    <form id="register-form">
+      <div class="form-group">
+        <label for="display_name">نام نمایشی</label>
+        <input type="text" id="display_name" name="display_name" placeholder="نام شما" required />
+      </div>
+      <div class="form-group">
+        <label for="email">ایمیل</label>
+        <input type="email" id="email" name="email" placeholder="you@example.com" required />
+      </div>
+      <div class="form-group">
+        <label for="password">رمز عبور</label>
+        <input type="password" id="password" name="password" placeholder="••••••••" minlength="8" required />
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%">ثبت‌نام</button>
+    </form>
+    <p style="margin-top:1rem; font-size:0.9rem; color:var(--muted)">
+      حساب دارید؟ <a href="/login">ورود</a>
+    </p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById('register-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var msg = document.getElementById('msg');
+  msg.innerHTML = '';
+  var body = {
+    display_name: document.getElementById('display_name').value,
+    email: document.getElementById('email').value,
+    password: document.getElementById('password').value
+  };
+  var resp = await fetch('/auth/register', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if (resp.ok) {
+    window.location.href = '/pending';
+  } else {
+    var err = await resp.json();
+    msg.innerHTML = '<div class="alert alert-error">' + (err.detail || 'خطا در ثبت‌نام') + '</div>';
+  }
+});
+</script>
+{% endblock %}

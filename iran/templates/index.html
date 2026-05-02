@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}دانلود موسیقی — RubeTunes{% endblock %}
+{% block content %}
+<h1>دانلود موسیقی</h1>
+
+<div class="card">
+  <div id="msg"></div>
+  <form id="submit-form">
+    <div class="form-group">
+      <label for="url">لینک آهنگ یا پلی‌لیست</label>
+      <input type="url" id="url" name="url" placeholder="https://open.spotify.com/track/..." required />
+    </div>
+    <div class="form-group">
+      <label for="platform">پلتفرم</label>
+      <select id="platform" name="platform">
+        <option value="spotify">Spotify</option>
+        <option value="youtube">YouTube</option>
+        <option value="tidal">Tidal</option>
+        <option value="qobuz">Qobuz</option>
+        <option value="amazon">Amazon Music</option>
+        <option value="soundcloud">SoundCloud</option>
+        <option value="bandcamp">Bandcamp</option>
+        <option value="musicdl">musicdl</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="quality">کیفیت</label>
+      <select id="quality" name="quality">
+        <option value="mp3">MP3 (320kbps)</option>
+        <option value="flac">FLAC (CD Quality)</option>
+        <option value="hires">Hi-Res FLAC (24-bit)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="job_type">نوع دانلود</label>
+      <select id="job_type" name="job_type">
+        <option value="single">تک آهنگ / ویدیو</option>
+        <option value="batch">آلبوم / پلی‌لیست</option>
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary">ارسال درخواست</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>پلتفرم‌های پشتیبانی‌شده</h2>
+  <div class="platform-grid">
+    <span class="platform-chip">🎵 Spotify — تک آهنگ، آلبوم، پلی‌لیست</span>
+    <span class="platform-chip">▶️ YouTube — ویدیو، پلی‌لیست</span>
+    <span class="platform-chip">🌊 Tidal — تک آهنگ، آلبوم، پلی‌لیست</span>
+    <span class="platform-chip">🎼 Qobuz — تک آهنگ، آلبوم</span>
+    <span class="platform-chip">🛒 Amazon Music — تک آهنگ، آلبوم</span>
+    <span class="platform-chip">☁️ SoundCloud — تک آهنگ، ست</span>
+    <span class="platform-chip">🏕️ Bandcamp — تک آهنگ، آلبوم</span>
+    <span class="platform-chip">🔍 musicdl — جستجوی چند منبع</span>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+// Auto-detect platform from URL
+document.getElementById('url').addEventListener('input', function() {
+  var url = this.value.toLowerCase();
+  var platform = document.getElementById('platform');
+  if (url.includes('spotify.com')) platform.value = 'spotify';
+  else if (url.includes('youtube.com') || url.includes('youtu.be') || url.includes('music.youtube.com')) platform.value = 'youtube';
+  else if (url.includes('tidal.com')) platform.value = 'tidal';
+  else if (url.includes('qobuz.com')) platform.value = 'qobuz';
+  else if (url.includes('amazon.com')) platform.value = 'amazon';
+  else if (url.includes('soundcloud.com')) platform.value = 'soundcloud';
+  else if (url.includes('bandcamp.com')) platform.value = 'bandcamp';
+  // Also auto-detect batch type
+  var jobType = document.getElementById('job_type');
+  if (url.includes('playlist') || url.includes('album') || url.includes('set')) {
+    jobType.value = 'batch';
+  }
+});
+
+document.getElementById('submit-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var msg = document.getElementById('msg');
+  msg.innerHTML = '';
+  var token = sessionStorage.getItem('rt_access_token');
+  if (!token) { window.location.href = '/login'; return; }
+  var body = {
+    url: document.getElementById('url').value,
+    platform: document.getElementById('platform').value,
+    quality: document.getElementById('quality').value,
+    job_type: document.getElementById('job_type').value
+  };
+  var resp = await fetch('/jobs', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token},
+    body: JSON.stringify(body)
+  });
+  if (resp.ok) {
+    var data = await resp.json();
+    window.location.href = '/ui/jobs/' + data.job_id;
+  } else if (resp.status === 401) {
+    window.location.href = '/login';
+  } else {
+    var err = await resp.json();
+    msg.innerHTML = '<div class="alert alert-error">' + (err.detail || 'خطا در ارسال درخواست') + '</div>';
+  }
+});
+</script>
+{% endblock %}

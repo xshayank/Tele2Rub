@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}کتابخانه — RubeTunes{% endblock %}
+{% block content %}
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem">
+  <h1>کتابخانه دانلودها</h1>
+  <div style="display:flex; gap:0.5rem; align-items:center">
+    <label for="filter-status" style="margin:0; color:var(--muted); font-size:0.9rem">فیلتر:</label>
+    <select id="filter-status" style="width:auto; margin:0; font-size:0.9rem; padding:0.4rem 0.6rem">
+      <option value="">همه</option>
+      <option value="completed">تکمیل شده</option>
+      <option value="running">در حال اجرا</option>
+      <option value="failed">خطا</option>
+      <option value="pending">در انتظار</option>
+      <option value="cancelled">لغو شده</option>
+    </select>
+    <a href="/" class="btn btn-primary" style="font-size:0.9rem; padding:0.4rem 0.8rem">+ دانلود جدید</a>
+  </div>
+</div>
+
+<div class="card" style="padding:0; overflow:hidden">
+  <div id="jobs-container">
+    <div style="padding:2rem; text-align:center; color:var(--muted)">در حال بارگذاری...</div>
+  </div>
+  <div id="pagination" class="pagination" style="padding:1rem"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+  var token = sessionStorage.getItem('rt_access_token');
+  if (!token) { window.location.href = '/login'; return; }
+
+  var currentPage = 1;
+  var perPage = 20;
+  var filterStatus = '';
+
+  var statusLabels = {
+    'pending': 'در انتظار', 'accepted': 'پذیرفته شد',
+    'running': 'در حال اجرا', 'completed': 'تکمیل شد',
+    'failed': 'خطا', 'cancelled': 'لغو شد'
+  };
+  var badgeClass = {
+    'pending': 'badge-pending', 'accepted': 'badge-pending',
+    'running': 'badge-running', 'completed': 'badge-completed',
+    'failed': 'badge-failed', 'cancelled': 'badge-cancelled'
+  };
+  var platformIcons = {
+    'spotify': '🎵', 'youtube': '▶️', 'tidal': '🌊',
+    'qobuz': '🎼', 'amazon': '🛒', 'soundcloud': '☁️',
+    'bandcamp': '🏕️', 'musicdl': '🔍'
+  };
+
+  function formatDate(iso) {
+    if (!iso) return '';
+    return new Date(iso).toLocaleDateString('fa-IR', { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+  function formatBytes(bytes) {
+    if (!bytes) return '';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+    return (bytes / 1073741824).toFixed(2) + ' GB';
+  }
+  function totalSize(keys) {
+    if (!keys || !keys.length) return '';
+    var total = keys.reduce(function(s, k) { return s + (k.size || 0); }, 0);
+    return formatBytes(total);
+  }
+  function shortUrl(url) {
+    try { var u = new URL(url); return u.hostname + u.pathname.substring(0, 30) + (u.pathname.length > 30 ? '…' : ''); }
+    catch (_) { return url.substring(0, 50); }
+  }
+
+  function loadJobs() {
+    var url = '/jobs?page=' + currentPage + '&per_page=' + perPage;
+    fetch(url, { headers: { 'Authorization': 'Bearer ' + token } })
+      .then(function(r) {
+        if (r.status === 401) { window.location.href = '/login'; return null; }
+        return r.json();
+      })
+      .then(function(data) {
+        if (!data) return;
+        var jobs = data.jobs || [];
+        if (filterStatus) jobs = jobs.filter(function(j) { return j.status === filterStatus; });
+        renderJobs(jobs, data.total, data.page, data.per_page);
+      });
+  }
+
+  function renderJobs(jobs, total, page, perPage) {
+    var container = document.getElementById('jobs-container');
+    if (jobs.length === 0) {
+      container.innerHTML = '<div style="padding:2rem; text-align:center; color:var(--muted)">هیچ کاری یافت نشد.</div>';
+      document.getElementById('pagination').innerHTML = '';
+      return;
+    }
+    var html = '<table><thead><tr><th>پلتفرم</th><th>لینک</th><th>وضعیت</th><th>تاریخ</th><th>حجم</th><th>عملیات</th></tr></thead><tbody>';
+    jobs.forEach(function(j) {
+      var icon = platformIcons[j.platform] || '🎵';
+      var badge = '<span class="badge ' + (badgeClass[j.status] || '') + '">' + (statusLabels[j.status] || j.status) + '</span>';
+      var size = totalSize(j.s2_keys);
+      var actions = '<a href="/ui/jobs/' + j.job_id + '" class="btn btn-secondary" style="font-size:0.8rem;padding:0.3rem 0.6rem">مشاهده</a>';
+      if (j.status === 'completed') {
+        actions += ' <a href="/jobs/' + j.job_id + '/download" class="btn btn-primary" style="font-size:0.8rem;padding:0.3rem 0.6rem">دانلود</a>';
+      }
+      html += '<tr>';
+      html += '<td>' + icon + ' ' + j.platform + '</td>';
+      html += '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + j.url + '" class="num">' + shortUrl(j.url) + '</td>';
+      html += '<td>' + badge + '</td>';
+      html += '<td class="num">' + formatDate(j.created_at) + '</td>';
+      html += '<td class="num">' + (size || '—') + '</td>';
+      html += '<td>' + actions + '</td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+    // Pagination
+    var totalPages = Math.ceil(total / perPage);
+    if (totalPages <= 1) { document.getElementById('pagination').innerHTML = ''; return; }
+    var phtml = '';
+    if (page > 1) phtml += '<a href="#" data-page="' + (page-1) + '">قبلی</a>';
+    for (var i = 1; i <= totalPages; i++) {
+      if (i === page) phtml += '<span class="current">' + i + '</span>';
+      else phtml += '<a href="#" data-page="' + i + '">' + i + '</a>';
+    }
+    if (page < totalPages) phtml += '<a href="#" data-page="' + (page+1) + '">بعدی</a>';
+    document.getElementById('pagination').innerHTML = phtml;
+    document.getElementById('pagination').querySelectorAll('a[data-page]').forEach(function(a) {
+      a.addEventListener('click', function(e) { e.preventDefault(); currentPage = parseInt(this.dataset.page); loadJobs(); });
+    });
+  }
+
+  document.getElementById('filter-status').addEventListener('change', function() {
+    filterStatus = this.value;
+    currentPage = 1;
+    loadJobs();
+  });
+
+  loadJobs();
+})();
+</script>
+{% endblock %}

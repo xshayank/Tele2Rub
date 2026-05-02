@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}ورود — RubeTunes{% endblock %}
+{% block content %}
+<div style="max-width: 420px; margin: 4rem auto;">
+  <div class="card">
+    <h1>ورود به حساب</h1>
+    <div id="msg"></div>
+    <form id="login-form">
+      <div class="form-group">
+        <label for="email">ایمیل</label>
+        <input type="email" id="email" name="email" placeholder="you@example.com" required />
+      </div>
+      <div class="form-group">
+        <label for="password">رمز عبور</label>
+        <input type="password" id="password" name="password" placeholder="••••••••" required />
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%">ورود</button>
+    </form>
+    <p style="margin-top:1rem; font-size:0.9rem; color:var(--muted)">
+      حساب ندارید؟ <a href="/register">ثبت‌نام</a>
+    </p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById('login-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var msg = document.getElementById('msg');
+  msg.innerHTML = '';
+  var body = {
+    email: document.getElementById('email').value,
+    password: document.getElementById('password').value
+  };
+  var resp = await fetch('/auth/login', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+    credentials: 'include'
+  });
+  if (resp.ok) {
+    var data = await resp.json();
+    sessionStorage.setItem('rt_access_token', data.access_token);
+    window.location.href = '/';
+  } else {
+    var err = await resp.json();
+    msg.innerHTML = '<div class="alert alert-error">' + (err.detail || 'خطا در ورود') + '</div>';
+  }
+});
+</script>
+{% endblock %}
