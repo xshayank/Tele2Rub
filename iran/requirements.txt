@@ -8,7 +8,7 @@ pydantic==2.7.4
 pydantic-settings==2.3.4
 
 # File upload support (required for POST /admin/settings/cookies)
-python-multipart==0.0.9
+python-multipart==0.0.22
 
 # Database (filled in Step 3)
 sqlalchemy[asyncio]==2.0.31
