@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title %}تنظیمات — مدیریت RubeTunes{% endblock %}
+{% block content %}
+<h1>ویرایشگر تنظیمات</h1>
+<div class="card">
+  <div id="settings-form">
+    <div style="color:var(--muted)">در حال بارگذاری…</div>
+  </div>
+  <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:1rem">
+    <button class="btn btn-primary" onclick="saveSettings()">💾 ذخیره تنظیمات</button>
+    <button class="btn btn-secondary" onclick="openClearcache()">🗑 پاک‌سازی کش</button>
+    <label class="btn btn-secondary" style="cursor:pointer">
+      🍪 آپلود کوکی‌ها
+      <input type="file" id="cookies-file" style="display:none" onchange="uploadCookies(this)">
+    </label>
+  </div>
+  <div id="ack-info" style="display:none;margin-top:1rem" class="alert alert-info"></div>
+</div>
+
+<div id="clearcache-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;align-items:center;justify-content:center">
+  <div class="card" style="max-width:400px;width:100%">
+    <h2>پاک‌سازی کش</h2>
+    <label>هدف</label>
+    <select id="cc-target">
+      <option value="all">همه</option>
+      <option value="lru">LRU</option>
+      <option value="isrc">ISRC</option>
+    </select>
+    <div style="display:flex;gap:0.5rem">
+      <button class="btn btn-danger" onclick="doClearcache()">پاک‌سازی</button>
+      <button class="btn btn-secondary" onclick="document.getElementById('clearcache-modal').style.display='none'">لغو</button>
+    </div>
+  </div>
+</div>
+
+<div id="action-result" style="display:none;margin-top:1rem" class="alert"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const token = () => sessionStorage.getItem('rt_access_token');
+let settingsData = {};
+
+async function apiReq(method, path, body) {
+  const opts = { method, headers: { Authorization: 'Bearer ' + token() } };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  if (r.status === 403) { window.location = '/login'; return null; }
+  return r.ok ? r.json() : null;
+}
+
+async function load() {
+  const data = await apiReq('GET', '/admin/settings');
+  if (!data) return;
+  settingsData = data.settings;
+  const form = document.getElementById('settings-form');
+  form.innerHTML = '';
+  Object.entries(settingsData).forEach(([key, meta]) => {
+    const div = document.createElement('div');
+    div.className = 'form-group';
+    div.innerHTML = `<label>${key}</label><input id="setting-${key}" value="${meta.value}" data-key="${key}" />`;
+    form.appendChild(div);
+  });
+  if (!Object.keys(settingsData).length) {
+    form.innerHTML = '<div style="color:var(--muted)">هیچ تنظیماتی موجود نیست.</div>';
+  }
+}
+
+async function saveSettings() {
+  const settings = {};
+  document.querySelectorAll('#settings-form input').forEach(inp => {
+    settings[inp.dataset.key] = inp.value;
+  });
+  const res = await apiReq('PATCH', '/admin/settings', { settings });
+  const el = document.getElementById('action-result');
+  el.style.display = '';
+  if (res) { el.className = 'alert alert-success'; el.textContent = 'تنظیمات با موفقیت ذخیره شد.'; }
+  else { el.className = 'alert alert-error'; el.textContent = 'خطا در ذخیره تنظیمات.'; }
+}
+
+function openClearcache() {
+  document.getElementById('clearcache-modal').style.display = 'flex';
+}
+
+async function doClearcache() {
+  const target = document.getElementById('cc-target').value;
+  document.getElementById('clearcache-modal').style.display = 'none';
+  const res = await apiReq('POST', '/admin/settings/clearcache', { target });
+  const el = document.getElementById('action-result');
+  el.style.display = '';
+  if (res) { el.className = 'alert alert-success'; el.textContent = `کش ${target} پاک شد.`; }
+  else { el.className = 'alert alert-error'; el.textContent = 'خطا در پاک‌سازی کش.'; }
+}
+
+async function uploadCookies(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await fetch('/admin/settings/cookies', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + token() },
+    body: fd,
+  });
+  const el = document.getElementById('action-result');
+  el.style.display = '';
+  if (r.ok) { el.className = 'alert alert-success'; el.textContent = 'کوکی‌ها با موفقیت آپلود شدند.'; }
+  else { el.className = 'alert alert-error'; el.textContent = 'خطا در آپلود کوکی‌ها.'; }
+}
+
+load();
+</script>
+{% endblock %}

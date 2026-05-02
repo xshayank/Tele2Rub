@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}مانیتور جاب‌ها — RubeTunes{% endblock %}
+{% block content %}
+<h1>مانیتور جاب‌ها</h1>
+<div class="card">
+  <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
+    <select id="filter-status" onchange="loadJobs()">
+      <option value="">همه وضعیت‌ها</option>
+      <option value="pending">در انتظار</option>
+      <option value="accepted">قبول‌شده</option>
+      <option value="running">در حال اجرا</option>
+      <option value="completed">تکمیل‌شده</option>
+      <option value="failed">ناموفق</option>
+      <option value="cancelled">لغوشده</option>
+    </select>
+    <select id="filter-platform" onchange="loadJobs()">
+      <option value="">همه پلتفرم‌ها</option>
+      <option value="youtube">YouTube</option>
+      <option value="spotify">Spotify</option>
+      <option value="tidal">Tidal</option>
+    </select>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>کاربر</th>
+        <th>پلتفرم</th>
+        <th>وضعیت</th>
+        <th>پیشرفت</th>
+        <th>ایجاد</th>
+        <th>عملیات</th>
+      </tr>
+    </thead>
+    <tbody id="jobs-tbody">
+      <tr><td colspan="6" style="color:var(--muted)">در حال بارگذاری…</td></tr>
+    </tbody>
+  </table>
+  <div id="pagination" class="pagination"></div>
+</div>
+<div id="action-result" style="display:none" class="alert"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+const token = () => sessionStorage.getItem('rt_access_token');
+let currentPage = 1;
+let refreshTimer = null;
+
+async function apiReq(method, path, body) {
+  const opts = { method, headers: { Authorization: 'Bearer ' + token() } };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch(path, opts);
+  if (r.status === 403) { window.location = '/login'; return null; }
+  return r.ok ? r.json() : null;
+}
+
+async function loadJobs() {
+  const status = document.getElementById('filter-status').value;
+  const platform = document.getElementById('filter-platform').value;
+  let url = `/admin/jobs?page=${currentPage}&per_page=25`;
+  if (status) url += `&status=${status}`;
+  if (platform) url += `&platform=${platform}`;
+  const data = await apiReq('GET', url);
+  if (!data) return;
+  const tbody = document.getElementById('jobs-tbody');
+  tbody.innerHTML = '';
+  data.jobs.forEach(j => {
+    const tr = document.createElement('tr');
+    const inProgress = ['pending','accepted','running'].includes(j.status);
+    tr.innerHTML = `
+      <td class="num">${j.user_id.slice(0,8)}…</td>
+      <td>${j.platform}</td>
+      <td><span class="badge badge-${j.status}">${j.status}</span></td>
+      <td>${j.progress}%</td>
+      <td class="num">${j.created_at?.slice(0,16).replace('T',' ') ?? ''}</td>
+      <td>${inProgress ? `<button class="btn btn-danger" onclick="cancelJob('${j.job_id}')">لغو</button>` : ''}</td>`;
+    tbody.appendChild(tr);
+  });
+  const pages = Math.ceil(data.total / 25);
+  const pg = document.getElementById('pagination');
+  pg.innerHTML = '';
+  for (let i = 1; i <= pages; i++) {
+    const a = document.createElement('a');
+    a.href = '#'; a.textContent = i;
+    if (i === currentPage) a.className = 'current';
+    a.onclick = e => { e.preventDefault(); currentPage = i; loadJobs(); };
+    pg.appendChild(a);
+  }
+}
+
+async function cancelJob(id) {
+  const res = await apiReq('DELETE', `/admin/jobs/${id}`);
+  const el = document.getElementById('action-result');
+  el.style.display = '';
+  if (res !== null) { el.className = 'alert alert-success'; el.textContent = 'جاب لغو شد.'; loadJobs(); }
+  else { el.className = 'alert alert-error'; el.textContent = 'خطا در لغو جاب.'; }
+}
+
+loadJobs();
+refreshTimer = setInterval(loadJobs, 5000);
+window.addEventListener('beforeunload', () => clearInterval(refreshTimer));
+</script>
+{% endblock %}

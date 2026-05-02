@@ -7,6 +7,9 @@ uvicorn[standard]==0.30.1
 pydantic==2.7.4
 pydantic-settings==2.3.4
 
+# File upload support (required for POST /admin/settings/cookies)
+python-multipart==0.0.9
+
 # Database (filled in Step 3)
 sqlalchemy[asyncio]==2.0.31
 asyncpg==0.29.0
