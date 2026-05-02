@@ -19,3 +19,7 @@ uvicorn[standard]>=0.29.0
 # Track B Step 3 — database
 sqlalchemy[asyncio]>=2.0
 alembic>=1.13
+# Track B Step 4 — auth
+passlib[bcrypt]>=1.7.4
+python-jose[cryptography]>=3.3.0
+email-validator>=2.0.0
