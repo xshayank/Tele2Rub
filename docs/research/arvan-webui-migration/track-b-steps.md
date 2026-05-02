@@ -35,7 +35,9 @@
 
 ---
 
-## Step 1 — Project Skeleton & Package Layout
+## Step 1 — Project Skeleton & Package Layout ✅
+
+> ✅ **Done** — `iran/` package implemented with `iran/__init__.py`, `iran/__main__.py` (CLI with `--version`, `--check-config`, `--help`), `iran/main.py` (FastAPI app factory + ASGI lifespan + DI wiring stubs), `iran/config.py` (`IranSettings` via pydantic-settings, `IRAN_` prefix), `iran/logging_setup.py` (JSON/text), `iran/api/health.py` (`GET /health`), and protocol-based DI stubs for `iran/rubika_client.py`, `iran/s2_client.py`, `iran/event_bus.py`. `tests/test_iran_step1.py` adds 27 tests covering package importability, health endpoint, settings parsing from env, CLI flags, and DI stub protocols. `python -c "import iran"` exits 0; `python -m iran --help` prints usage; `python -m iran --check-config` validates env config.
 
 **Goal**: Create the `iran/` Python package with the agreed structure so every later step has a place to land.
 
