@@ -249,7 +249,9 @@
 
 ---
 
-## Step 4 — Auth Service (JWT + Registration + Approval Flow)
+## Step 4 — Auth Service (JWT + Registration + Approval Flow) ✅
+
+> ✅ **Done** — `iran/api/auth.py` implements all four auth endpoints: `POST /auth/register` (bcrypt-hashed password, pending_approval status, registration row + audit_log); `POST /auth/login` (bcrypt verify, rate-limit 5 failures/15 min/IP via audit_log, HS256 JWT access token 15 min, random 32-byte hex refresh token SHA-256 in DB, httpOnly+Secure+SameSite=Strict cookie); `POST /auth/refresh` (rotates refresh token, re-issues access token); `POST /auth/logout` (JWT-authenticated, revokes refresh token). `iran/api/deps.py` exposes `get_db`, `get_current_user` (status=active guard), and `require_admin` (role=admin guard) FastAPI dependencies. `tests/test_iran_step4_auth.py` adds 43 tests covering all happy-path and error flows using `httpx.AsyncClient`.
 
 **Goal**: Secure, stateless JWT authentication with admin-gated registration.
 

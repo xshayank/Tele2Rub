@@ -98,12 +98,20 @@ def __getattr__(name: str) -> object:
 async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     """Context-manager that yields a transactional ``AsyncSession``.
 
-    Rolls back on exception; commits + closes on success.
+    Rolls back on unexpected exceptions; commits on success or on
+    ``HTTPException`` (so audit-log entries survive HTTP error responses).
     """
+    from fastapi import HTTPException
+
     async with _get_session_factory()() as session:
         try:
             yield session
             await session.commit()
+        except HTTPException:
+            # Commit so that audit-log / rate-limit entries written before
+            # the HTTP error are persisted (e.g. login failure records).
+            await session.commit()
+            raise
         except Exception:
             await session.rollback()
             raise
