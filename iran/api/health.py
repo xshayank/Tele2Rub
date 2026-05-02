@@ -43,3 +43,23 @@ async def health() -> dict[str, Any]:
         "version": iran.__version__,
         "contract_version": CONTRACT_VERSION,
     }
+
+
+@router.get(
+    "/healthz",
+    summary="Liveness probe",
+    response_description="Service liveness status",
+)
+async def healthz() -> dict[str, Any]:
+    """Kubernetes / Docker liveness probe endpoint.
+
+    Returns ``200 {"status": "ok"}`` when the service process is alive.
+    Used by the Docker Compose ``healthcheck`` and by load-balancer
+    readiness checks.
+    """
+    return {
+        "status": "ok",
+        "service": "iran",
+        "version": iran.__version__,
+        "contract_version": CONTRACT_VERSION,
+    }

@@ -484,6 +484,8 @@ async def refresh(
 @router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
     summary="Revoke the current refresh token",
 )
 async def logout(

@@ -90,6 +90,47 @@ def __getattr__(name: str) -> object:
 
 
 # ---------------------------------------------------------------------------
+# Alembic migration helper
+# ---------------------------------------------------------------------------
+
+
+async def run_migrations() -> None:
+    """Run ``alembic upgrade head`` programmatically against the live database.
+
+    Safe to call on every startup — Alembic is idempotent and skips
+    revisions that have already been applied.  When ``DATABASE_URL`` is
+    empty (e.g. during unit tests that supply their own engine) this
+    function is a no-op.
+    """
+    try:
+        from iran.config import get_settings
+
+        url = get_settings().DATABASE_URL
+    except (ImportError, AttributeError, ValueError):
+        url = os.environ.get("IRAN_DATABASE_URL", "")
+
+    if not url:
+        return  # no-op in tests / when DB is not configured
+
+    import pathlib
+
+    from alembic import command
+    from alembic.config import Config as AlembicConfig
+
+    alembic_ini = pathlib.Path(__file__).parent / "alembic.ini"
+    alembic_cfg = AlembicConfig(str(alembic_ini))
+    alembic_cfg.set_main_option("sqlalchemy.url", url)
+
+    # Run in a thread pool to avoid blocking the event loop
+    import asyncio
+    import functools
+
+    await asyncio.get_event_loop().run_in_executor(
+        None, functools.partial(command.upgrade, alembic_cfg, "head")
+    )
+
+
+# ---------------------------------------------------------------------------
 # Dependency-injection helper (FastAPI / general use)
 # ---------------------------------------------------------------------------
 

@@ -241,6 +241,13 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     # ------------------------------------------------------------------
+    # Run database migrations (alembic upgrade head — idempotent)
+    # ------------------------------------------------------------------
+    from iran.db.engine import run_migrations
+
+    await run_migrations()
+
+    # ------------------------------------------------------------------
     # Initialise DI objects
     # ------------------------------------------------------------------
     app.state.event_bus = make_event_bus()
