@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "type": "admin.settings.update",
+  "ts": "2026-04-26T17:05:56Z",
+  "job_id": null,
+  "settings": {
+    "MAX_JOBS_PER_HOUR": "20",
+    "PRESIGNED_URL_TTL_SEC": "7200"
+  }
+}
