@@ -1,19 +1,25 @@
 """Spotify downloader adapter for the Kharej VPS worker.
 
-Wraps the existing ``spotify_dl`` / ``rubetunes.downloader`` waterfall
-(Spotify GraphQL → Tidal Alt → Deezer → YouTube Music fallback) and exposes
-a clean async interface for the dispatcher.
+Supports single tracks, playlists, and albums.
 
-Flow
-----
+Flow (single track)
+-------------------
 1. Parse the Spotify track ID from *job.url* via ``parse_spotify_track_id``.
 2. Fetch track metadata (title, artists, cover URL) via ``get_track_info``.
-3. Download the audio file via ``download_track`` (async, wraps a thread).
+3. Download the audio file via yt-dlp YouTube search (with cookies).
 4. Upload the audio to ``media/{job_id}/{safe_title}.{ext}``.
 5. If a cover URL is available, download the thumbnail and upload it to
    ``thumbs/{job_id}.jpg``.
 6. Return ``list[S2ObjectRef]`` with the media ref and, if applicable, the
    thumbnail ref.
+
+Flow (playlist / album)
+-----------------------
+1. Detect the collection URL with ``_is_spotify_collection``.
+2. Resolve track list via the ``spotify_dl`` shim.
+3. For each track, call ``_download_spotify_track_locally`` and upload to S2.
+4. Report per-track progress.
+5. Return all refs.
 
 Read-only usage
 ---------------
@@ -50,72 +56,82 @@ async def _download_spotify_track_locally(
     ytdlp_bin: str = "yt-dlp",
     cookies_path: str | None = None,
 ) -> "Path":
-    """Download a Spotify track locally without uploading to S2.
+    """Download a Spotify track locally via YouTube search with cookies.
 
-    MP3 quality  → YouTube search via yt-dlp.
-    Other quality → musicdl search; falls back to existing waterfall.
+    Download order:
+    1. yt-dlp YouTube search (with cookies) — primary path, avoids bot-detection.
+    2. musicdl fallback — used when yt-dlp fails (e.g. cookies not configured).
+
     Returns the local Path of the downloaded audio file.
     """
-    if quality == "mp3":
-        try:
-            import yt_dlp as _yt_dlp  # noqa: PLC0415
+    import yt_dlp as _yt_dlp  # noqa: PLC0415
 
-            query = f"ytsearch1:{artist} - {title}" if artist else f"ytsearch1:{title}"
-            ydl_opts: dict = {
-                "format": "bestaudio/best",
-                "postprocessors": [
-                    {
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "mp3",
-                        "preferredquality": "320",
-                    }
-                ],
-                "outtmpl": str(tmp_dir / "%(title)s.%(ext)s"),
-                "noplaylist": True,
-                "quiet": True,
+    query = f"ytsearch1:{artist} - {title}" if artist else f"ytsearch1:{title}"
+    ydl_opts: dict = {
+        "format": "bestaudio/best",
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "320",
             }
-            if cookies_path:
-                ydl_opts["cookiefile"] = cookies_path
+        ],
+        "outtmpl": str(tmp_dir / "%(title)s.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+    }
+    if cookies_path:
+        ydl_opts["cookiefile"] = cookies_path
 
-            def _run_ytdlp() -> None:
-                with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([query])
+    def _run_ytdlp() -> None:
+        with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([query])
 
-            await asyncio.to_thread(_run_ytdlp)
-            audio_path = next(tmp_dir.glob("*.mp3"), None)
+    try:
+        await asyncio.to_thread(_run_ytdlp)
+        audio_path = next(tmp_dir.glob("*.mp3"), None)
+        if audio_path is not None:
+            return audio_path
+        logger.warning({"event": "spotify.ytdlp_no_mp3", "query": query})
+    except Exception as exc:
+        logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
+
+    # Fallback: musicdl (does not require cookies, but has no cookie support)
+    try:
+        from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
+
+        client = MusicdlClient()
+        musicdl_query = f"{artist} - {title}" if artist else title
+        await asyncio.to_thread(client.download, musicdl_query, str(tmp_dir))
+        for ext in ("*.mp3", "*.flac", "*.m4a", "*.opus", "*.ogg"):
+            audio_path = next(tmp_dir.glob(ext), None)
             if audio_path is not None:
                 return audio_path
-            logger.warning({"event": "spotify.ytdlp_no_mp3", "query": query})
-        except Exception as exc:
-            logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
-        # Fallback to existing waterfall
-    else:
-        try:
-            from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
-
-            client = MusicdlClient()
-            query = f"{artist} - {title}" if artist else title
-            await asyncio.to_thread(client.download, query, str(tmp_dir))
-            for ext in ("*.flac", "*.mp3", "*.m4a", "*.opus", "*.ogg"):
-                audio_path = next(tmp_dir.glob(ext), None)
-                if audio_path is not None:
-                    return audio_path
-            logger.warning({"event": "spotify.musicdl_no_file", "query": query})
-        except Exception as exc:
-            logger.warning({"event": "spotify.musicdl_failed", "error": repr(exc)})
-        # Fallback to existing waterfall
-
-    # Waterfall fallback (existing behaviour)
-    try:
-        import spotify_dl as _spodl  # noqa: PLC0415
-        return await _spodl.download_track(info, tmp_dir, ytdlp_bin)
+        logger.warning({"event": "spotify.musicdl_no_file", "query": musicdl_query})
     except Exception as exc:
-        logger.warning({"event": "spotify.waterfall_failed", "error": repr(exc)})
-        raise
+        logger.warning({"event": "spotify.musicdl_failed", "error": repr(exc)})
+
+    raise RuntimeError(
+        f"All download sources failed for track: {artist!r} - {title!r}. "
+        "Ensure a valid cookies.txt is present and yt-dlp is up to date."
+    )
+
+
+def _is_spotify_collection(url: str) -> bool:
+    """Return True if the URL points to a Spotify playlist or album.
+
+    Uses ``urllib.parse`` to check the path component so that the check is
+    not confused by query parameters or fragments that happen to contain
+    the substrings ``/playlist/`` or ``/album/``.
+    """
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    path = urlparse(url).path
+    return "/playlist/" in path or "/album/" in path
 
 
 class SpotifyDownloader:
-    """Download a single Spotify track and upload it (+ thumbnail) to Arvan S2."""
+    """Download a Spotify track (or collection) and upload it (+ thumbnail) to Arvan S2."""
 
     platform: ClassVar[str] = "spotify"
 
@@ -127,7 +143,7 @@ class SpotifyDownloader:
         progress: ProgressReporter,
         settings: KharejSettings,
     ) -> list[S2ObjectRef]:
-        """Resolve, download, upload.  Returns 1–2 :class:`~kharej.contracts.S2ObjectRef` objects."""
+        """Resolve, download, upload.  Returns :class:`~kharej.contracts.S2ObjectRef` objects."""
         # ------------------------------------------------------------------
         # Import spotify_dl shim (read-only)
         # ------------------------------------------------------------------
@@ -138,8 +154,54 @@ class SpotifyDownloader:
                 "spotify_dl shim is not importable; ensure the rubetunes package is installed"
             ) from exc
 
+        ytdlp_bin: str = "yt-dlp"  # could be made configurable
+        cookies_path = resolve_cookies_path(settings)
+
         # ------------------------------------------------------------------
-        # Parse track ID
+        # Playlist / Album  — expand to individual tracks and download each
+        # ------------------------------------------------------------------
+        if _is_spotify_collection(job.url):
+            tracks: list[dict] | None = None
+            for getter in ("get_playlist_tracks", "get_album_tracks", "list_collection_tracks"):
+                fn = getattr(_spodl, getter, None)
+                if fn is None:
+                    continue
+                try:
+                    tracks = await asyncio.to_thread(fn, job.url)
+                    if tracks:
+                        break
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        {
+                            "event": "spotify.collection_getter_failed",
+                            "getter": getter,
+                            "job_id": job.job_id,
+                            "error": repr(exc),
+                        }
+                    )
+
+            if not tracks:
+                logger.warning(
+                    {
+                        "event": "spotify.collection_fallback",
+                        "job_id": job.job_id,
+                        "url": job.url,
+                        "note": "Could not resolve collection tracks; treating URL as single item",
+                    }
+                )
+                # Fall through to single-track logic below
+            else:
+                return await self._run_collection(
+                    job=job,
+                    tracks=tracks,
+                    s2=s2,
+                    progress=progress,
+                    ytdlp_bin=ytdlp_bin,
+                    cookies_path=cookies_path,
+                )
+
+        # ------------------------------------------------------------------
+        # Single track
         # ------------------------------------------------------------------
         track_id: str | None = await asyncio.to_thread(_spodl.parse_spotify_track_id, job.url)
         if not track_id:
@@ -166,12 +228,6 @@ class SpotifyDownloader:
             }
         )
 
-        # ------------------------------------------------------------------
-        # Download (the existing waterfall is already async)
-        # ------------------------------------------------------------------
-        ytdlp_bin: str = "yt-dlp"  # could be made configurable
-        cookies_path = resolve_cookies_path(settings)
-
         with tempfile.TemporaryDirectory(prefix=f"kharej_sp_{job.job_id}_") as tmp_str:
             tmp_dir = Path(tmp_str)
 
@@ -184,39 +240,17 @@ class SpotifyDownloader:
 
             await progress.report_progress(job.job_id, 90, phase="uploading")
 
-            # ------------------------------------------------------------------
-            # Upload audio
-            # ------------------------------------------------------------------
-            ext = audio_path.suffix.lstrip(".")
-            artist_part = safe_filename(", ".join(artists)) if artists else ""
-            title_part = safe_filename(title)
-            stem = f"{artist_part}_-_{title_part}" if artist_part else title_part
-            s2_filename = f"{stem}.{ext}" if ext else stem
-            s2_key = make_media_key(job.job_id, s2_filename)
-
-            logger.info(
-                {
-                    "event": "spotify.upload_start",
-                    "job_id": job.job_id,
-                    "key": s2_key,
-                    "size": audio_path.stat().st_size,
-                }
+            refs: list[S2ObjectRef] = []
+            audio_ref = await self._upload_audio(
+                audio_path=audio_path,
+                job_id=job.job_id,
+                artists=artists,
+                title=title,
+                s2=s2,
             )
-            audio_ref: S2ObjectRef = await asyncio.to_thread(s2.upload_file, audio_path, s2_key)
-            logger.info(
-                {
-                    "event": "spotify.upload_done",
-                    "job_id": job.job_id,
-                    "key": s2_key,
-                    "sha256": audio_ref.sha256,
-                }
-            )
+            refs.append(audio_ref)
 
-            refs: list[S2ObjectRef] = [audio_ref]
-
-            # ------------------------------------------------------------------
-            # Optional: download and upload thumbnail
-            # ------------------------------------------------------------------
+            # Optional thumbnail
             if cover_url:
                 try:
                     thumb_ref = await _upload_thumbnail(
@@ -238,6 +272,124 @@ class SpotifyDownloader:
 
             await progress.report_progress(job.job_id, 100, phase="uploading")
             return refs
+
+    async def _run_collection(
+        self,
+        job: "Job",
+        tracks: list[dict],
+        s2: "S2Client",
+        progress: "ProgressReporter",
+        ytdlp_bin: str,
+        cookies_path: str | None,
+    ) -> list[S2ObjectRef]:
+        """Download each track in a playlist/album and return all S2 refs."""
+        total = len(tracks)
+        all_refs: list[S2ObjectRef] = []
+
+        with tempfile.TemporaryDirectory(prefix=f"kharej_spcol_{job.job_id}_") as tmp_str:
+            tmp_dir = Path(tmp_str)
+
+            for idx, track_info in enumerate(tracks):
+                title: str = track_info.get("title") or "Unknown"
+                raw_artists = track_info.get("artists") or []
+                artist: str = raw_artists[0] if raw_artists else ""
+
+                logger.info(
+                    {
+                        "event": "spotify.collection_track_start",
+                        "job_id": job.job_id,
+                        "track": f"{idx + 1}/{total}",
+                        "title": title,
+                        "artist": artist,
+                    }
+                )
+
+                # Each track gets its own sub-directory to avoid filename collisions
+                track_dir = tmp_dir / f"track_{idx:04d}"
+                track_dir.mkdir()
+
+                try:
+                    audio_path = await _download_spotify_track_locally(
+                        title,
+                        artist,
+                        job.quality or "mp3",
+                        track_dir,
+                        track_info,
+                        ytdlp_bin,
+                        cookies_path=cookies_path,
+                    )
+                    audio_ref = await self._upload_audio(
+                        audio_path=audio_path,
+                        job_id=job.job_id,
+                        artists=list(raw_artists) if raw_artists else [],
+                        title=title,
+                        s2=s2,
+                        track_index=idx,
+                    )
+                    all_refs.append(audio_ref)
+                except Exception as exc:
+                    logger.warning(
+                        {
+                            "event": "spotify.collection_track_failed",
+                            "job_id": job.job_id,
+                            "title": title,
+                            "error": repr(exc),
+                        }
+                    )
+
+                done = idx + 1
+                percent = int(done / total * 100)
+                await progress.report_progress(
+                    job.job_id,
+                    percent,
+                    phase="downloading",
+                    done_tracks=done,
+                    total_tracks=total,
+                )
+
+        if not all_refs:
+            raise RuntimeError(
+                f"All tracks failed for collection job {job.job_id!r} ({total} tracks)"
+            )
+        return all_refs
+
+    @staticmethod
+    async def _upload_audio(
+        audio_path: "Path",
+        job_id: str,
+        artists: list[str],
+        title: str,
+        s2: "S2Client",
+        track_index: int | None = None,
+    ) -> "S2ObjectRef":
+        """Upload *audio_path* to S2 and return the ref."""
+        ext = audio_path.suffix.lstrip(".")
+        artist_part = safe_filename(", ".join(artists)) if artists else ""
+        title_part = safe_filename(title)
+        stem = f"{artist_part}_-_{title_part}" if artist_part else title_part
+        if track_index is not None:
+            stem = f"{track_index:04d}_{stem}"
+        s2_filename = f"{stem}.{ext}" if ext else stem
+        s2_key = make_media_key(job_id, s2_filename)
+
+        logger.info(
+            {
+                "event": "spotify.upload_start",
+                "job_id": job_id,
+                "key": s2_key,
+                "size": audio_path.stat().st_size,
+            }
+        )
+        ref: S2ObjectRef = await asyncio.to_thread(s2.upload_file, audio_path, s2_key)
+        logger.info(
+            {
+                "event": "spotify.upload_done",
+                "job_id": job_id,
+                "key": s2_key,
+                "sha256": ref.sha256,
+            }
+        )
+        return ref
 
 
 # ---------------------------------------------------------------------------
