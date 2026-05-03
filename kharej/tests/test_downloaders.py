@@ -30,9 +30,6 @@ from kharej.downloaders.youtube import (
     _audio_codec,
     _is_audio_quality,
     _resolve_format,
-    parse_eta,
-    parse_percent,
-    parse_speed,
 )
 
 # ---------------------------------------------------------------------------
@@ -223,58 +220,6 @@ class TestCleanupPath:
 # ===========================================================================
 
 
-class TestParsePercent:
-    def test_from_percent_str(self) -> None:
-        assert parse_percent({"_percent_str": " 45.7%"}) == 45
-
-    def test_from_percent_str_100(self) -> None:
-        assert parse_percent({"_percent_str": "100%"}) == 100
-
-    def test_from_bytes(self) -> None:
-        info = {"downloaded_bytes": 500, "total_bytes": 1000}
-        assert parse_percent(info) == 50
-
-    def test_from_bytes_estimate(self) -> None:
-        info = {"downloaded_bytes": 300, "total_bytes_estimate": 1000}
-        assert parse_percent(info) == 30
-
-    def test_capped_at_100(self) -> None:
-        assert parse_percent({"_percent_str": "150%"}) == 100
-
-    def test_empty_returns_zero(self) -> None:
-        assert parse_percent({}) == 0
-
-    def test_none_total_bytes_returns_zero(self) -> None:
-        info = {"downloaded_bytes": 500, "total_bytes": None}
-        assert parse_percent(info) == 0
-
-    def test_zero_total_bytes_returns_zero(self) -> None:
-        info = {"downloaded_bytes": 500, "total_bytes": 0}
-        assert parse_percent(info) == 0
-
-
-class TestParseSpeed:
-    def test_returns_stripped_string(self) -> None:
-        assert parse_speed({"_speed_str": " 3.2 MiB/s "}) == "3.2 MiB/s"
-
-    def test_missing_returns_none(self) -> None:
-        assert parse_speed({}) is None
-
-    def test_none_returns_none(self) -> None:
-        assert parse_speed({"_speed_str": None}) is None
-
-
-class TestParseEta:
-    def test_integer_eta(self) -> None:
-        assert parse_eta({"eta": 42}) == 42
-
-    def test_float_eta_truncated(self) -> None:
-        assert parse_eta({"eta": 9.9}) == 9
-
-    def test_missing_returns_none(self) -> None:
-        assert parse_eta({}) is None
-
-
 # ===========================================================================
 # _resolve_format / _is_audio_quality / _audio_codec
 # ===========================================================================
@@ -337,13 +282,14 @@ async def test_youtube_downloader_uploads_and_returns_ref(tmp_path: Path) -> Non
     fake_file = tmp_path / "Rick Astley - Never Gonna Give You Up.mp3"
     fake_file.write_bytes(b"\xff\xfb" * 512)
 
-    def _fake_yt_download(url: str, opts: dict) -> None:
-        # Write a fake file to the outtmpl directory.
-        outtmpl = opts["outtmpl"]
-        out_dir = Path(outtmpl).parent
+    def _fake_subprocess(cmd, job_id, loop, progress_coro_factory):
+        # Extract output dir from --output argument
+        idx = cmd.index("--output")
+        out_dir = Path(cmd[idx + 1]).parent
         (out_dir / "Rick Astley - Never Gonna Give You Up.mp3").write_bytes(b"\xff\xfb" * 512)
 
-    with patch("kharej.downloaders.youtube._do_yt_download", side_effect=_fake_yt_download):
+    with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
+         patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
         downloader = YoutubeDownloader()
         refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
@@ -364,12 +310,13 @@ async def test_youtube_downloader_reports_progress(tmp_path: Path) -> None:
     progress = _make_progress()
     settings = _make_settings()
 
-    def _fake_yt_download(url: str, opts: dict) -> None:
-        outtmpl = opts["outtmpl"]
-        out_dir = Path(outtmpl).parent
+    def _fake_subprocess(cmd, job_id, loop, progress_coro_factory):
+        idx = cmd.index("--output")
+        out_dir = Path(cmd[idx + 1]).parent
         (out_dir / "track.mp3").write_bytes(b"\x00" * 64)
 
-    with patch("kharej.downloaders.youtube._do_yt_download", side_effect=_fake_yt_download):
+    with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
+         patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
         downloader = YoutubeDownloader()
         await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
@@ -384,10 +331,11 @@ async def test_youtube_downloader_no_output_file_raises() -> None:
     progress = _make_progress()
     settings = _make_settings()
 
-    def _fake_yt_download(url: str, opts: dict) -> None:
+    def _fake_subprocess(cmd, job_id, loop, progress_coro_factory):
         pass  # produce nothing
 
-    with patch("kharej.downloaders.youtube._do_yt_download", side_effect=_fake_yt_download):
+    with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
+         patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
         downloader = YoutubeDownloader()
         with pytest.raises(RuntimeError, match="no output file"):
             await downloader.run(job, s2=s2, progress=progress, settings=settings)
@@ -395,26 +343,32 @@ async def test_youtube_downloader_no_output_file_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_youtube_downloader_uses_cookies(tmp_path: Path) -> None:
-    """When cookies_path is set in settings, it should be passed to yt-dlp."""
+    """When cookies_path is set and the file exists, --cookies is passed to yt-dlp."""
     job = _make_job(quality="mp3")
     s2 = _make_s2(_DUMMY_REF)
     progress = _make_progress()
-    settings = _make_settings({"cookies_path": str(tmp_path / "cookies.txt")})
+    # Create an actual cookies file so the existence check passes
+    cookies_file = tmp_path / "cookies.txt"
+    cookies_file.write_text("# Netscape HTTP Cookie File\n")
+    settings = _make_settings({"cookies_path": str(cookies_file)})
 
-    captured_opts: list[dict] = []
+    captured_cmds: list[list[str]] = []
 
-    def _fake_yt_download(url: str, opts: dict) -> None:
-        captured_opts.append(dict(opts))
-        outtmpl = opts["outtmpl"]
-        out_dir = Path(outtmpl).parent
+    def _fake_subprocess(cmd, job_id, loop, progress_coro_factory):
+        captured_cmds.append(list(cmd))
+        idx = cmd.index("--output")
+        out_dir = Path(cmd[idx + 1]).parent
         (out_dir / "track.mp3").write_bytes(b"\x00" * 64)
 
-    with patch("kharej.downloaders.youtube._do_yt_download", side_effect=_fake_yt_download):
+    with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
+         patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
         downloader = YoutubeDownloader()
         await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
-    assert captured_opts
-    assert "cookiefile" in captured_opts[0]
+    assert captured_cmds
+    assert "--cookies" in captured_cmds[0]
+    cookies_idx = captured_cmds[0].index("--cookies")
+    assert captured_cmds[0][cookies_idx + 1] == str(cookies_file)
 
 
 @pytest.mark.asyncio
@@ -425,13 +379,14 @@ async def test_youtube_downloader_s2_key_uses_safe_filename() -> None:
     progress = _make_progress()
     settings = _make_settings()
 
-    def _fake_yt_download(url: str, opts: dict) -> None:
-        outtmpl = opts["outtmpl"]
-        out_dir = Path(outtmpl).parent
+    def _fake_subprocess(cmd, job_id, loop, progress_coro_factory):
+        idx = cmd.index("--output")
+        out_dir = Path(cmd[idx + 1]).parent
         # Filename with unsafe chars
         (out_dir / "Track: Super? Cool.mp3").write_bytes(b"\x00" * 64)
 
-    with patch("kharej.downloaders.youtube._do_yt_download", side_effect=_fake_yt_download):
+    with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
+         patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
         downloader = YoutubeDownloader()
         await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
