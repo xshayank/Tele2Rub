@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from kharej.contracts import S2ObjectRef, make_media_key, make_thumb_key
-from kharej.downloaders.common import safe_filename
+from kharej.downloaders.common import resolve_cookies_path, safe_filename
 
 if TYPE_CHECKING:
     from kharej.dispatcher import Job
@@ -48,6 +48,7 @@ async def _download_spotify_track_locally(
     tmp_dir: "Path",
     info: dict,
     ytdlp_bin: str = "yt-dlp",
+    cookies_path: str | None = None,
 ) -> "Path":
     """Download a Spotify track locally without uploading to S2.
 
@@ -60,7 +61,7 @@ async def _download_spotify_track_locally(
             import yt_dlp as _yt_dlp  # noqa: PLC0415
 
             query = f"ytsearch1:{artist} - {title}" if artist else f"ytsearch1:{title}"
-            ydl_opts = {
+            ydl_opts: dict = {
                 "format": "bestaudio/best",
                 "postprocessors": [
                     {
@@ -73,6 +74,8 @@ async def _download_spotify_track_locally(
                 "noplaylist": True,
                 "quiet": True,
             }
+            if cookies_path:
+                ydl_opts["cookiefile"] = cookies_path
 
             def _run_ytdlp() -> None:
                 with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -167,6 +170,7 @@ class SpotifyDownloader:
         # Download (the existing waterfall is already async)
         # ------------------------------------------------------------------
         ytdlp_bin: str = "yt-dlp"  # could be made configurable
+        cookies_path = resolve_cookies_path(settings)
 
         with tempfile.TemporaryDirectory(prefix=f"kharej_sp_{job.job_id}_") as tmp_str:
             tmp_dir = Path(tmp_str)
@@ -174,7 +178,8 @@ class SpotifyDownloader:
             logger.info({"event": "spotify.download_start", "job_id": job.job_id})
             artist: str = artists[0] if artists else ""
             audio_path: Path = await _download_spotify_track_locally(
-                title, artist, job.quality or "mp3", tmp_dir, info, ytdlp_bin
+                title, artist, job.quality or "mp3", tmp_dir, info, ytdlp_bin,
+                cookies_path=cookies_path,
             )
 
             await progress.report_progress(job.job_id, 90, phase="uploading")

@@ -379,7 +379,10 @@ async def test_youtube_downloader_autodiscovers_cookies(tmp_path: Path, monkeypa
     progress = _make_progress()
     settings = _make_settings()  # no cookies_path
 
-    # Place a cookies.txt where the auto-discovery logic will find it
+    # Place a cookies.txt where the auto-discovery logic will find it.
+    # common.py auto-discovers via Path(__file__).parent.parent (kharej/).
+    # We patch common.__file__ so that parent.parent resolves to tmp_path,
+    # and place cookies.txt there.
     cookies_file = tmp_path / "cookies.txt"
     cookies_file.write_text("# Netscape HTTP Cookie File\n")
 
@@ -391,11 +394,11 @@ async def test_youtube_downloader_autodiscovers_cookies(tmp_path: Path, monkeypa
         out_dir = Path(cmd[idx + 1]).parent
         (out_dir / "track.mp3").write_bytes(b"\x00" * 64)
 
-    # Patch __file__ so that Path(__file__).parent.parent resolves to tmp_path
-    # (i.e. the "kharej/" dir), where cookies.txt was created above.
-    # Structure: tmp_path/downloaders/youtube.py → parent.parent == tmp_path
-    import kharej.downloaders.youtube as yt_mod
-    monkeypatch.setattr(yt_mod, "__file__", str(tmp_path / "downloaders" / "youtube.py"))
+    # Patch __file__ on the common module so that Path(__file__).parent.parent
+    # resolves to tmp_path ("kharej/"), where cookies.txt was created above.
+    # Structure: tmp_path/downloaders/common.py → parent.parent == tmp_path
+    import kharej.downloaders.common as common_mod
+    monkeypatch.setattr(common_mod, "__file__", str(tmp_path / "downloaders" / "common.py"))
 
     with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
          patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
@@ -602,6 +605,53 @@ async def test_spotify_downloader_thumbnail_failure_does_not_abort() -> None:
     # Should still return the audio ref despite thumbnail failure.
     assert len(refs) == 1
     assert refs[0] is _DUMMY_REF
+
+
+@pytest.mark.asyncio
+async def test_spotify_downloader_passes_cookies_to_ytdlp(tmp_path: Path) -> None:
+    """SpotifyDownloader.run should pass cookiefile to yt-dlp when cookies_path is configured."""
+    from kharej.downloaders.spotify import SpotifyDownloader
+
+    cookies_file = tmp_path / "cookies.txt"
+    cookies_file.write_text("# Netscape HTTP Cookie File\n")
+    settings = _make_settings({"cookies_path": str(cookies_file)})
+
+    captured_opts: list[dict] = []
+
+    fake_mod = MagicMock()
+    fake_mod.parse_spotify_track_id = MagicMock(return_value="abc123")
+    fake_mod.get_track_info = MagicMock(
+        return_value={"title": "Test Track", "artists": ["Artist"], "cover_url": None}
+    )
+
+    class _FakeYDL:
+        def __init__(self, opts: dict) -> None:
+            captured_opts.append(opts)
+
+        def __enter__(self) -> "_FakeYDL":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def download(self, queries: list) -> None:
+            outtmpl = captured_opts[-1].get("outtmpl", "")
+            out_dir = Path(outtmpl).parent
+            (out_dir / "test.mp3").write_bytes(b"\xff\xfb" * 32)
+
+    fake_yt_dlp = MagicMock()
+    fake_yt_dlp.YoutubeDL = _FakeYDL
+
+    job = _make_job(platform="spotify", url="https://open.spotify.com/track/abc123", quality="mp3")
+    s2 = _make_s2(_DUMMY_REF)
+    progress = _make_progress()
+
+    with patch.dict("sys.modules", {"spotify_dl": fake_mod, "yt_dlp": fake_yt_dlp}):
+        downloader = SpotifyDownloader()
+        await downloader.run(job, s2=s2, progress=progress, settings=settings)
+
+    assert captured_opts, "YoutubeDL was never instantiated"
+    assert captured_opts[0].get("cookiefile") == str(cookies_file)
 
 
 # ===========================================================================
