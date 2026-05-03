@@ -21,8 +21,6 @@
 {% endblock %}
 {% block scripts %}
 <script>
-const token = () => sessionStorage.getItem('rt_access_token');
-
 function formatBytes(b) {
   if (b < 1024) return b + ' B';
   if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
@@ -30,7 +28,8 @@ function formatBytes(b) {
 }
 
 async function load() {
-  const r = await fetch('/admin/storage', { headers: { Authorization: 'Bearer ' + token() } });
+  const r = await window.authFetch('/admin/storage');
+  if (!r) return;
   if (r.status === 403) { window.location = '/login'; return; }
   const data = await r.json();
   document.getElementById('total-objects').textContent = data.total_objects;

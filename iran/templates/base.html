@@ -156,22 +156,78 @@
     {% block content %}{% endblock %}
   </main>
   <script>
-    // Minimal auth state: check sessionStorage for access_token
     (function () {
-      var token = sessionStorage.getItem('rt_access_token');
-      if (token) {
-        document.getElementById('nav-logout-item').style.display = '';
-        document.getElementById('nav-login-item').style.display = 'none';
-      }
-      document.getElementById('nav-logout').addEventListener('click', function (e) {
-        e.preventDefault();
-        var t = sessionStorage.getItem('rt_access_token');
-        if (t) {
-          fetch('/auth/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + t } });
-        }
+      // Migrate from sessionStorage to localStorage if needed
+      var legacy = sessionStorage.getItem('rt_access_token');
+      if (legacy) {
+        localStorage.setItem('rt_access_token', legacy);
         sessionStorage.removeItem('rt_access_token');
-        window.location.href = '/login';
-      });
+      }
+
+      function getToken() {
+        return localStorage.getItem('rt_access_token') || sessionStorage.getItem('rt_access_token');
+      }
+      function setToken(t) {
+        localStorage.setItem('rt_access_token', t);
+        sessionStorage.removeItem('rt_access_token');
+      }
+      function clearToken() {
+        localStorage.removeItem('rt_access_token');
+        sessionStorage.removeItem('rt_access_token');
+      }
+
+      async function refreshToken() {
+        var r = await fetch('/auth/refresh', { method: 'POST', credentials: 'include' });
+        if (r.ok) {
+          var data = await r.json();
+          setToken(data.access_token);
+          return data.access_token;
+        }
+        return null;
+      }
+
+      window.getToken = getToken;
+      window.setToken = setToken;
+      window.clearToken = clearToken;
+
+      // authFetch: like fetch() but auto-refreshes on 401
+      window.authFetch = async function(url, options) {
+        options = options || {};
+        options.headers = options.headers || {};
+        var token = getToken();
+        if (token) options.headers['Authorization'] = 'Bearer ' + token;
+        var resp = await fetch(url, options);
+        if (resp.status === 401) {
+          var newToken = await refreshToken();
+          if (newToken) {
+            options.headers['Authorization'] = 'Bearer ' + newToken;
+            resp = await fetch(url, options);
+          } else {
+            clearToken();
+            window.location.href = '/login';
+            return resp;
+          }
+        }
+        return resp;
+      };
+
+      // Update nav state
+      if (getToken()) {
+        var logoutItem = document.getElementById('nav-logout-item');
+        var loginItem = document.getElementById('nav-login-item');
+        if (logoutItem) logoutItem.style.display = '';
+        if (loginItem) loginItem.style.display = 'none';
+      }
+      var logoutBtn = document.getElementById('nav-logout');
+      if (logoutBtn) {
+        logoutBtn.addEventListener('click', function (e) {
+          e.preventDefault();
+          var t = getToken();
+          if (t) fetch('/auth/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + t }, credentials: 'include' });
+          clearToken();
+          window.location.href = '/login';
+        });
+      }
     })();
   </script>
   {% block scripts %}{% endblock %}

@@ -40,13 +40,13 @@
 {% endblock %}
 {% block scripts %}
 <script>
-const token = () => sessionStorage.getItem('rt_access_token');
 let currentPage = 1;
 
 async function apiReq(method, path, body) {
-  const opts = { method, headers: { Authorization: 'Bearer ' + token() } };
+  const opts = { method, headers: {} };
   if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-  const r = await fetch(path, opts);
+  const r = await window.authFetch(path, opts);
+  if (!r) return null;
   if (r.status === 403) { window.location = '/login'; return null; }
   return r.ok ? r.json() : null;
 }

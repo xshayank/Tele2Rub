@@ -43,7 +43,7 @@
 {% block scripts %}
 <script>
 (function() {
-  var token = sessionStorage.getItem('rt_access_token');
+  var token = window.getToken();
   if (!token) { window.location.href = '/login'; return; }
 
   // Profile form — display name update
@@ -65,9 +65,9 @@
       old_password: document.getElementById('old_password').value,
       new_password: document.getElementById('new_password').value
     };
-    var resp = await fetch('/auth/change-password', {
+    var resp = await window.authFetch('/auth/change-password', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
     if (resp.ok) {
@@ -83,12 +83,11 @@
   document.getElementById('delete-btn').addEventListener('click', async function() {
     if (!confirm('آیا مطمئن هستید؟ این عملیات قابل بازگشت نیست.')) return;
     var msg = document.getElementById('delete-msg');
-    var resp = await fetch('/auth/delete-account', {
-      method: 'DELETE',
-      headers: { 'Authorization': 'Bearer ' + token }
+    var resp = await window.authFetch('/auth/delete-account', {
+      method: 'DELETE'
     });
     if (resp.ok) {
-      sessionStorage.removeItem('rt_access_token');
+      window.clearToken();
       window.location.href = '/login';
     } else {
       var err = await resp.json().catch(function() { return {}; });

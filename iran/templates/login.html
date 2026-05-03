@@ -40,7 +40,7 @@ document.getElementById('login-form').addEventListener('submit', async function(
   });
   if (resp.ok) {
     var data = await resp.json();
-    sessionStorage.setItem('rt_access_token', data.access_token);
+    window.setToken(data.access_token);
     window.location.href = '/';
   } else {
     var err = await resp.json();

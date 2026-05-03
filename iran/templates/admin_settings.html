@@ -37,13 +37,13 @@
 {% endblock %}
 {% block scripts %}
 <script>
-const token = () => sessionStorage.getItem('rt_access_token');
 let settingsData = {};
 
 async function apiReq(method, path, body) {
-  const opts = { method, headers: { Authorization: 'Bearer ' + token() } };
+  const opts = { method, headers: {} };
   if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-  const r = await fetch(path, opts);
+  const r = await window.authFetch(path, opts);
+  if (!r) return null;
   if (r.status === 403) { window.location = '/login'; return null; }
   return r.ok ? r.json() : null;
 }
@@ -96,9 +96,8 @@ async function uploadCookies(input) {
   if (!file) return;
   const fd = new FormData();
   fd.append('file', file);
-  const r = await fetch('/admin/settings/cookies', {
+  const r = await window.authFetch('/admin/settings/cookies', {
     method: 'POST',
-    headers: { Authorization: 'Bearer ' + token() },
     body: fd,
   });
   const el = document.getElementById('action-result');

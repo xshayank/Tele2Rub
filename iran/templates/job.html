@@ -44,7 +44,7 @@
 <script>
 (function() {
   var JOB_ID = {{ job_id | tojson }};
-  var token = sessionStorage.getItem('rt_access_token');
+  var token = window.getToken();
   if (!token) { window.location.href = '/login'; return; }
 
   var statusBadge = document.getElementById('status-badge');
@@ -156,9 +156,8 @@
   }
 
   // Load current job state first
-  fetch('/jobs/' + JOB_ID, { headers: { 'Authorization': 'Bearer ' + token } })
+  window.authFetch('/jobs/' + JOB_ID)
     .then(function(r) {
-      if (r.status === 401) { window.location.href = '/login'; return null; }
       if (r.status === 403 || r.status === 404) { window.location.href = '/library'; return null; }
       return r.json();
     })
@@ -167,7 +166,7 @@
       applyUpdate(data);
       if (data.status === 'completed') {
         // Fetch download parts
-        fetch('/jobs/' + JOB_ID + '/download', { headers: { 'Authorization': 'Bearer ' + token } })
+        window.authFetch('/jobs/' + JOB_ID + '/download')
           .then(function(r) { return r.json(); })
           .then(function(d) { if (d.parts) renderDownloads(d.parts); });
         return; // No SSE needed
@@ -178,7 +177,7 @@
 
   function startSSE() {
     var url = '/jobs/' + JOB_ID + '/events';
-    var es = new EventSource(url + '?token=' + encodeURIComponent(token));
+    var es = new EventSource(url + '?token=' + encodeURIComponent(window.getToken()));
     es.onmessage = function(e) {
       try {
         var data = JSON.parse(e.data);
@@ -186,7 +185,7 @@
         if (data.type === 'job.completed') {
           es.close();
           // Fetch download list
-          fetch('/jobs/' + JOB_ID + '/download', { headers: { 'Authorization': 'Bearer ' + token } })
+          window.authFetch('/jobs/' + JOB_ID + '/download')
             .then(function(r) { return r.json(); })
             .then(function(d) { if (d.parts) renderDownloads(d.parts); });
         }
@@ -198,10 +197,7 @@
 
   cancelBtn.addEventListener('click', async function() {
     cancelBtn.disabled = true;
-    var resp = await fetch('/jobs/' + JOB_ID, {
-      method: 'DELETE',
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
+    var resp = await window.authFetch('/jobs/' + JOB_ID, { method: 'DELETE' });
     if (resp.ok || resp.status === 204) {
       statusBadge.className = 'badge badge-cancelled';
       statusBadge.textContent = 'لغو شد';
