@@ -31,6 +31,17 @@
         <option value="hires">Hi-Res FLAC (24-bit)</option>
       </select>
     </div>
+    <!-- YouTube video quality row — hidden unless YouTube is selected -->
+    <div class="form-group" id="video-quality-group" style="display:none">
+      <label for="video-quality">کیفیت ویدیو</label>
+      <select id="video-quality" name="video-quality">
+        <option value="mp4-1080p">1080p (Full HD)</option>
+        <option value="mp4-720p">720p (HD)</option>
+        <option value="mp4-480p">480p (SD)</option>
+        <option value="mp4-360p">360p (Low)</option>
+        <option value="mp4">بهترین کیفیت</option>
+      </select>
+    </div>
     <div class="form-group">
       <label for="job_type">نوع دانلود</label>
       <select id="job_type" name="job_type">
@@ -58,6 +69,22 @@
 {% endblock %}
 {% block scripts %}
 <script>
+// Show/hide quality rows based on selected platform
+function updateQualityRows() {
+  var platform = document.getElementById('platform').value;
+  var audioGroup = document.getElementById('quality').closest('.form-group');
+  var videoGroup = document.getElementById('video-quality-group');
+  if (platform === 'youtube') {
+    audioGroup.style.display = 'none';
+    videoGroup.style.display = '';
+  } else {
+    audioGroup.style.display = '';
+    videoGroup.style.display = 'none';
+  }
+}
+
+document.getElementById('platform').addEventListener('change', updateQualityRows);
+
 // Auto-detect platform from URL
 document.getElementById('url').addEventListener('input', function() {
   var url = this.value.toLowerCase();
@@ -74,6 +101,7 @@ document.getElementById('url').addEventListener('input', function() {
   if (url.includes('playlist') || url.includes('album') || url.includes('set')) {
     jobType.value = 'batch';
   }
+  updateQualityRows();
 });
 
 document.getElementById('submit-form').addEventListener('submit', async function(e) {
@@ -82,10 +110,14 @@ document.getElementById('submit-form').addEventListener('submit', async function
   msg.innerHTML = '';
   var token = sessionStorage.getItem('rt_access_token');
   if (!token) { window.location.href = '/login'; return; }
+  var platform = document.getElementById('platform').value;
+  var quality = platform === 'youtube'
+    ? document.getElementById('video-quality').value
+    : document.getElementById('quality').value;
   var body = {
     url: document.getElementById('url').value,
-    platform: document.getElementById('platform').value,
-    quality: document.getElementById('quality').value,
+    platform: platform,
+    quality: quality,
     job_type: document.getElementById('job_type').value
   };
   var resp = await fetch('/jobs', {

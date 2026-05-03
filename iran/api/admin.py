@@ -31,12 +31,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from iran.api.deps import get_db
+from iran.api.deps import get_current_user, get_db
 from iran.contracts import (
     AdminClearcache,
     AdminCookiesUpdate,
@@ -54,36 +53,18 @@ logger = logging.getLogger("iran.api.admin")
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 # ---------------------------------------------------------------------------
-# Auth dependency — always returns 403 for any auth failure (security practice)
+# Auth dependency
 # ---------------------------------------------------------------------------
 
-_bearer = HTTPBearer(auto_error=False)
 
-
-async def _require_admin(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-    session: AsyncSession = Depends(get_db),
-) -> User:
-    """Admin auth dependency — raises 403 for unauthenticated OR non-admin users."""
-    _403 = HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Admin privileges required",
-    )
-    if credentials is None:
-        raise _403
-
-    from iran.api.auth import decode_access_token
-
-    payload = decode_access_token(credentials.credentials)
-    if payload is None:
-        raise _403
-
-    user_id: str = payload["sub"]
-    result = await session.execute(select(User).where(User.id == user_id))
-    user: User | None = result.scalar_one_or_none()
-    if user is None or user.status not in ("active",) or user.role != "admin":
-        raise _403
-    return user
+async def _require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Admin auth dependency — raises 403 for non-admin users."""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required",
+        )
+    return current_user
 
 
 # ---------------------------------------------------------------------------

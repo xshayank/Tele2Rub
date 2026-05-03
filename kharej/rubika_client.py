@@ -120,6 +120,13 @@ class _DefaultRubikaTransport:
         self._updates_task = asyncio.create_task(
             self._client.get_updates(), name="kharej-rubika-get-updates"
         )
+
+        def _on_updates_done(task: asyncio.Task) -> None:
+            if not task.cancelled():
+                self._connected = False
+                logger.warning({"event": "rubika.updates_task_died"})
+
+        self._updates_task.add_done_callback(_on_updates_done)
         self._connected = True
 
     async def disconnect(self) -> None:  # pragma: no cover
@@ -364,8 +371,20 @@ class RubikaClient:
     async def _supervisor(self) -> None:
         """Background task: watch for disconnects and reconnect with backoff."""
         backoff = self._config.reconnect_initial_seconds
+        heartbeat_interval = 30.0
+        elapsed = 0.0
+        poll_interval = 1.0
         while True:
-            await asyncio.sleep(0.1)  # polling interval
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+            if elapsed >= heartbeat_interval:
+                elapsed = 0.0
+                logger.debug(
+                    "Supervisor heartbeat",
+                    extra={"event": "rubika.supervisor_heartbeat"},
+                )
+
             if not self._transport.connected:
                 logger.warning(
                     "Detected disconnection",
@@ -387,6 +406,7 @@ class RubikaClient:
                             extra={"event": "rubika.reconnected", "backoff_used": sleep_time},
                         )
                         backoff = self._config.reconnect_initial_seconds  # reset
+                        elapsed = 0.0
                         break
                     except Exception as exc:
                         logger.warning(

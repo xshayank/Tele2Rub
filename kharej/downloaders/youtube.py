@@ -74,33 +74,28 @@ def _find_ytdlp(settings: "KharejSettings") -> str:
     )
 
 
+_YOUTUBE_FORMATS: dict[str, str] = {
+    "mp3": "bestaudio/best",
+    "mp4": "bestvideo+bestaudio/best",
+    "mp4-1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio/bestvideo[height<=1080]+bestaudio/best",
+    "mp4-720p": "bestvideo[height<=720][ext=mp4]+bestaudio/bestvideo[height<=720]+bestaudio/best",
+    "mp4-480p": "bestvideo[height<=480][ext=mp4]+bestaudio/bestvideo[height<=480]+bestaudio/best",
+    "mp4-360p": "bestvideo[height<=360][ext=mp4]+bestaudio/bestvideo[height<=360]+bestaudio/best",
+}
+
+_VALID_QUALITIES: frozenset[str] = frozenset(_YOUTUBE_FORMATS)
+
+_AUDIO_FORMAT = "mp3"
+
+
 def _resolve_format(quality: str) -> str:
     """Map a quality hint string to a yt-dlp format selector."""
-    _MAP = {
-        "mp3": "bestaudio/best",
-        "m4a": "bestaudio[ext=m4a]/bestaudio/best",
-        "flac": "bestaudio/best",
-        "ogg": "bestaudio/best",
-        "opus": "bestaudio[ext=webm]/bestaudio/best",
-        "bestaudio": "bestaudio/best",
-        "best": "bestvideo+bestaudio/best",
-        "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-        "720p": "bestvideo[height<=720]+bestaudio/best[height<=720]",
-        "480p": "bestvideo[height<=480]+bestaudio/best[height<=480]",
-        "360p": "bestvideo[height<=360]+bestaudio/best[height<=360]",
-    }
-    return _MAP.get(quality.lower(), quality)
+    return _YOUTUBE_FORMATS.get(quality.lower(), _YOUTUBE_FORMATS[_AUDIO_FORMAT])
 
 
 def _is_audio_quality(quality: str) -> bool:
     """Return True if *quality* implies audio-only extraction."""
-    return quality.lower() in {"mp3", "m4a", "flac", "ogg", "opus", "bestaudio"}
-
-
-def _audio_codec(quality: str) -> str:
-    """Return the FFmpeg audio codec for *quality*."""
-    _CODEC = {"mp3": "mp3", "m4a": "m4a", "flac": "flac", "ogg": "vorbis", "opus": "opus"}
-    return _CODEC.get(quality.lower(), "mp3")
+    return quality.lower() == "mp3"
 
 
 def _build_command(
@@ -136,7 +131,7 @@ def _build_command(
     if _is_audio_quality(quality):
         cmd += [
             "--extract-audio",
-            "--audio-format", _audio_codec(quality),
+            "--audio-format", _AUDIO_FORMAT,
             "--audio-quality", "0",
         ]
 
@@ -246,6 +241,8 @@ class YoutubeDownloader:
         loop = asyncio.get_running_loop()
 
         quality: str = job.quality or settings.get("default_audio_quality") or "mp3"
+        if quality.lower() not in _VALID_QUALITIES:
+            quality = "mp3"
 
         cookies_path = _resolve_cookies_path(settings)
 
