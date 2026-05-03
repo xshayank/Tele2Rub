@@ -240,42 +240,50 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         },
     )
 
-    # ------------------------------------------------------------------
-    # Run database migrations (alembic upgrade head — idempotent)
-    # ------------------------------------------------------------------
-    from iran.db.engine import run_migrations
+    try:
+        # ------------------------------------------------------------------
+        # Run database migrations (alembic upgrade head — idempotent)
+        # ------------------------------------------------------------------
+        from iran.db.engine import run_migrations
 
-    await run_migrations()
+        await run_migrations()
 
-    # ------------------------------------------------------------------
-    # Initialise DI objects
-    # ------------------------------------------------------------------
-    app.state.event_bus = make_event_bus()
-    app.state.s2_client = make_s2_client(settings)
-    app.state.pending_pings = {}  # request_id → asyncio.Event (health ping correlation)
+        # ------------------------------------------------------------------
+        # Initialise DI objects
+        # ------------------------------------------------------------------
+        app.state.event_bus = make_event_bus()
+        app.state.s2_client = make_s2_client(settings)
+        app.state.pending_pings = {}  # request_id → asyncio.Event (health ping correlation)
 
-    rubika_config = IranRubikaConfig(
-        RUBIKA_SESSION_IRAN=settings.RUBIKA_SESSION_IRAN,
-        KHAREJ_RUBIKA_ACCOUNT_GUID=settings.KHAREJ_RUBIKA_ACCOUNT_GUID,
-        IRAN_RUBIKA_ACCOUNT_GUID=settings.IRAN_RUBIKA_ACCOUNT_GUID,
-    )
-    rubika_client = make_rubika_client(rubika_config)
-    app.state.rubika_client = rubika_client
-
-    # Register inbound message handlers
-    handlers = _make_handlers(app)
-    for msg_type, handler in handlers.items():
-        rubika_client.register_handler(msg_type, handler)
-
-    # Start the Rubika client only when session credentials are configured
-    if settings.RUBIKA_SESSION_IRAN and settings.KHAREJ_RUBIKA_ACCOUNT_GUID:
-        await rubika_client.start()
-        logger.info("Rubika client started", extra={"event": "rubika_started"})
-    else:
-        logger.info(
-            "Rubika client not started (credentials not configured)",
-            extra={"event": "rubika_skip"},
+        rubika_config = IranRubikaConfig(
+            RUBIKA_SESSION_IRAN=settings.RUBIKA_SESSION_IRAN,
+            KHAREJ_RUBIKA_ACCOUNT_GUID=settings.KHAREJ_RUBIKA_ACCOUNT_GUID,
+            IRAN_RUBIKA_ACCOUNT_GUID=settings.IRAN_RUBIKA_ACCOUNT_GUID,
         )
+        rubika_client = make_rubika_client(rubika_config)
+        app.state.rubika_client = rubika_client
+
+        # Register inbound message handlers
+        handlers = _make_handlers(app)
+        for msg_type, handler in handlers.items():
+            rubika_client.register_handler(msg_type, handler)
+
+        # Start the Rubika client only when session credentials are configured
+        if settings.RUBIKA_SESSION_IRAN and settings.KHAREJ_RUBIKA_ACCOUNT_GUID:
+            await rubika_client.start()
+            logger.info("Rubika client started", extra={"event": "rubika_started"})
+        else:
+            logger.info(
+                "Rubika client not started (credentials not configured)",
+                extra={"event": "rubika_skip"},
+            )
+
+    except Exception:
+        logger.exception(
+            "Iran service startup failed",
+            extra={"event": "startup_error"},
+        )
+        raise
 
     yield  # ← application runs here
 
