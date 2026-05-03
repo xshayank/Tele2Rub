@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import pathlib
 import sys
 import traceback
 from collections.abc import AsyncGenerator
@@ -21,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from iran.api.admin import router as admin_router
 from iran.api.auth import router as auth_router
@@ -348,6 +350,12 @@ def create_app(settings: IranSettings | None = None) -> FastAPI:
     app.include_router(auth_router)
     app.include_router(jobs_router)
     app.include_router(admin_router)
+
+    # Mount static assets (self-hosted fonts, etc.) — must come AFTER all API
+    # routers so it does not shadow any API route.
+    _STATIC_DIR = pathlib.Path(__file__).parent / "static"
+    _STATIC_DIR.mkdir(exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     return app
 

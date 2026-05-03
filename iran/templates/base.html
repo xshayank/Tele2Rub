@@ -4,9 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}RubeTunes{% endblock %}</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/fonts/vazirmatn.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -21,7 +19,7 @@
       --danger: #f87171;
     }
     body {
-      font-family: 'Vazirmatn', system-ui, sans-serif;
+      font-family: 'Vazirmatn', 'Tahoma', 'Arial', system-ui, sans-serif;
       background: var(--bg);
       color: var(--text);
       min-height: 100vh;
