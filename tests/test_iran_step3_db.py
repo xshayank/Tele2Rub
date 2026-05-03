@@ -169,15 +169,13 @@ class TestAlembicConfig:
         try:
             # Remove any DB URL from the environment so run_migrations skips
             for key in list(os.environ.keys()):
-                if key in ("IRAN_DATABASE_URL",):
+                if key == "IRAN_DATABASE_URL":
                     del os.environ[key]
 
             # Also clear the lru_cache so settings are re-read
             from iran.config import get_settings
 
             get_settings.cache_clear()
-            # Ensure settings returns no DATABASE_URL
-            os.environ.pop("IRAN_DATABASE_URL", None)
 
             from iran.db.engine import run_migrations
 

@@ -116,6 +116,9 @@ async def run_migrations() -> None:
         run_flag = settings.RUN_MIGRATIONS
     except (ImportError, AttributeError, ValueError):
         url = os.environ.get("IRAN_DATABASE_URL", "")
+        # Pydantic-settings handles common boolean strings ("false", "no", "0"
+        # → False) automatically for the RUN_MIGRATIONS bool field.  Replicate
+        # the same set here for the rare fallback path (no settings available).
         run_flag = os.environ.get("IRAN_RUN_MIGRATIONS", "1").strip() not in ("0", "false", "no")
 
     if not run_flag:
