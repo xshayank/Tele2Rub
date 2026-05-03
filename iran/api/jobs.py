@@ -210,7 +210,7 @@ class CreateJobRequest(BaseModel):
     def _validate_quality(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("quality must not be empty")
-        return v.strip()
+        return v.strip().lower()
 
 
 class JobResponse(BaseModel):
