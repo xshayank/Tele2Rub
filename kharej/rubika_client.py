@@ -88,6 +88,7 @@ class _DefaultRubikaTransport:
         self._client: Any = None
         self._connected = False
         self._callback: Callable[[InboundMessage], Awaitable[None]] | None = None
+        self._updates_task: asyncio.Task[None] | None = None
 
     @property
     def connected(self) -> bool:  # pragma: no cover
@@ -98,33 +99,44 @@ class _DefaultRubikaTransport:
 
     async def connect(self) -> None:  # pragma: no cover
         import rubpy  # local import so tests can stub it
+        import rubpy.handlers as _handlers
 
-        self._client = rubpy.Client(name=self._session_name)
-        await self._client.__aenter__()
+        self._client = rubpy.Client(name=self._session_name, display_welcome=False)
+        await self._client.start()
 
-        @self._client.on_message_updates()
         async def _on_update(update: Any) -> None:
             try:
-                text = update.text or ""
-                sender = getattr(update, "object_guid", None) or getattr(
-                    update, "author_object_guid", ""
-                )
-                raw_id = getattr(update, "message_id", None)
-                if self._callback is not None:
+                text = getattr(update.message, "text", "") or ""
+                sender = update.object_guid
+                raw_id = getattr(update.message, "message_id", None)
+                if text and self._callback is not None:
                     await self._callback(InboundMessage(sender_guid=sender, text=text, raw_id=raw_id))
             except Exception:
                 logger.debug("Error in rubpy update handler", exc_info=True)
 
+        self._client.add_handler(_on_update, _handlers.MessageUpdates())
+
+        # Drive the rubpy event loop in a background task so connect() returns immediately.
+        self._updates_task = asyncio.create_task(
+            self._client.get_updates(), name="kharej-rubika-get-updates"
+        )
         self._connected = True
 
     async def disconnect(self) -> None:  # pragma: no cover
+        self._connected = False
+        if self._updates_task is not None and not self._updates_task.done():
+            self._updates_task.cancel()
+            try:
+                await self._updates_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._updates_task = None
         if self._client is not None:
             try:
-                await self._client.__aexit__(None, None, None)
+                await self._client.disconnect()
             except Exception:
                 pass
             self._client = None
-        self._connected = False
 
     async def send_text(self, peer_guid: str, text: str) -> None:  # pragma: no cover
         if self._client is None:
