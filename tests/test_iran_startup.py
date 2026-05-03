@@ -11,7 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import logging
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -119,6 +118,8 @@ class TestRunMigrationsNoOp:
 class TestStartupExceptionLogging:
     def test_startup_exception_is_logged_and_reraised(self, capsys):
         """If startup raises, it must be logged with exc_info and then re-raised."""
+        from unittest.mock import MagicMock, patch
+
         from starlette.testclient import TestClient
 
         from iran.config import IranSettings
@@ -129,17 +130,20 @@ class TestStartupExceptionLogging:
 
         boom = RuntimeError("injected startup failure")
 
-        with patch("iran.main.make_event_bus", side_effect=boom):
+        # Patch both make_event_bus (to trigger the error) and the iran.main logger
+        # so we can assert logger.exception was called with the right arguments.
+        mock_logger = MagicMock()
+
+        with patch("iran.main.make_event_bus", side_effect=boom), \
+             patch("iran.main.logger", mock_logger):
             with pytest.raises(Exception):
                 with TestClient(app, raise_server_exceptions=True):
                     pass
 
-        # The error must have been emitted (to stdout as JSON)
-        captured = capsys.readouterr()
-        output = captured.out + captured.err
-        assert "startup" in output.lower(), (
-            f"Expected startup error in output. Got:\n{output}"
-        )
-        assert "injected startup failure" in output, (
-            f"Expected exception message in output. Got:\n{output}"
+        # logger.exception must have been called (not just logger.error)
+        mock_logger.exception.assert_called_once()
+        call_args = mock_logger.exception.call_args
+        # First positional arg is the message
+        assert "startup" in call_args[0][0].lower(), (
+            f"Expected 'startup' in exception message, got: {call_args[0][0]!r}"
         )
