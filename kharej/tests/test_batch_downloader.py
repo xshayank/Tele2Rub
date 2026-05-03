@@ -714,3 +714,100 @@ class TestDispatcherBatchWiring:
         d.register(new_batch)
 
         assert d._batch_downloader is new_batch
+
+
+# ===========================================================================
+# Spotify collection expansion in batch
+# ===========================================================================
+
+
+class TestBatchSpotifyCollectionExpansion:
+    """Verify that BatchDownloader expands Spotify album/playlist URLs into per-track URLs."""
+
+    @pytest.mark.asyncio
+    async def test_album_url_expanded_to_multiple_tracks(self) -> None:
+        """When track_ids is absent and job.url is a Spotify album, it should expand to N tracks."""
+        calls: list[str] = []
+
+        async def _track_run(track_job, *, s2, progress, settings):
+            calls.append(track_job.url)
+            return [_make_ref(f"media/{_JOB_ID}/t.mp3")]
+
+        track_dl = MagicMock()
+        track_dl.run = _track_run
+
+        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        # No track_ids — batch should fall back to job.url and expand it
+        job = _make_job(
+            url="https://open.spotify.com/album/TESTALBUM123456789012",
+            track_ids=None,  # absent → triggers fallback + expansion
+            total_tracks=None,
+        )
+        progress = _make_progress()
+        s2 = _make_s2()
+        settings = _make_settings()
+
+        fake_spodl = MagicMock()
+        fake_spodl.parse_spotify_album_id = MagicMock(return_value="TESTALBUM123456789012")
+        fake_spodl.get_spotify_album_tracks = MagicMock(
+            return_value=({"name": "Test Album"}, ["tid1", "tid2", "tid3"])
+        )
+
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}):
+            refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
+
+        # Three tracks should have been downloaded (one per expanded track ID)
+        assert len(calls) == 3, f"Expected 3 track downloads, got {len(calls)}: {calls}"
+        # Each call should be an individual track URL
+        for url in calls:
+            assert "/track/" in url, f"Expected individual track URL, got: {url}"
+
+    @pytest.mark.asyncio
+    async def test_playlist_url_expanded_to_multiple_tracks(self) -> None:
+        """When track_ids is absent and job.url is a Spotify playlist, it should expand."""
+        calls: list[str] = []
+
+        async def _track_run(track_job, *, s2, progress, settings):
+            calls.append(track_job.url)
+            return [_make_ref(f"media/{_JOB_ID}/t.mp3")]
+
+        track_dl = MagicMock()
+        track_dl.run = _track_run
+
+        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        job = _make_job(
+            url="https://open.spotify.com/playlist/TESTPLAYLIST12345678",
+            track_ids=None,
+            total_tracks=None,
+        )
+        progress = _make_progress()
+        s2 = _make_s2()
+        settings = _make_settings()
+
+        fake_spodl = MagicMock()
+        fake_spodl.parse_spotify_playlist_id = MagicMock(return_value="TESTPLAYLIST12345678")
+        fake_spodl.get_spotify_playlist_tracks = MagicMock(
+            return_value=({"name": "My Playlist"}, ["pA", "pB"])
+        )
+
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}):
+            refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
+
+        assert len(calls) == 2
+        for url in calls:
+            assert "/track/" in url
+
+    @pytest.mark.asyncio
+    async def test_explicit_empty_track_ids_raises(self) -> None:
+        """Explicitly passing track_ids=[] (not None) must raise without fallback."""
+        track_dl = _make_track_downloader()
+        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        job = _make_job(track_ids=[], total_tracks=0)
+        progress = _make_progress()
+        s2 = _make_s2()
+        settings = _make_settings()
+
+        with pytest.raises(RuntimeError, match="no tracks downloaded"):
+            await batch.run(job, s2=s2, progress=progress, settings=settings)
+
+        assert track_dl.run.call_count == 0

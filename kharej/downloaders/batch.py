@@ -111,12 +111,14 @@ class BatchDownloader:
         """
         payload = job.payload
         collection_name: str = payload.collection_name or safe_filename(job.url) or "batch"
-        track_ids: list[str] = list(payload.track_ids or [])
+        # Distinguish absent (None) track_ids from explicitly empty ([]) ones.
+        _raw_ids = payload.track_ids
+        track_ids: list[str] = list(_raw_ids) if _raw_ids is not None else []
         total_tracks: int = payload.total_tracks or len(track_ids)
 
-        # When no track_ids were provided, fall back to the collection URL so
-        # that yt-dlp/spotdl can handle the playlist/album natively.
-        if not track_ids:
+        # When track_ids was absent in the payload (None), fall back to the
+        # collection URL so that yt-dlp / spotdl can handle it natively.
+        if _raw_ids is None:
             logger.warning(
                 {
                     "event": "batch.no_track_ids",
@@ -127,6 +129,63 @@ class BatchDownloader:
             # Use the collection URL directly — yt-dlp/spotdl can handle playlist URLs natively.
             track_ids = [job.url]
             total_tracks = 1
+
+        # For Spotify: expand any collection (album/playlist) URLs into
+        # individual track URLs before the download loop, so each per-track
+        # downloader call receives a single-track URL with proper metadata.
+        if job.platform == "spotify" and track_ids:
+            try:
+                from kharej.downloaders.spotify import (  # noqa: PLC0415
+                    _expand_spotify_collection,
+                    _is_spotify_collection,
+                )
+                import spotify_dl as _spodl_exp  # noqa: PLC0415
+
+                expanded: list[str] = []
+                needs_update = False
+                for raw_url in track_ids:
+                    url = (
+                        raw_url
+                        if raw_url.startswith("http")
+                        else f"https://open.spotify.com/track/{raw_url}"
+                    )
+                    if _is_spotify_collection(url):
+                        needs_update = True
+                        try:
+                            coll_ids = await _expand_spotify_collection(url, _spodl_exp)
+                            if coll_ids:
+                                expanded.extend(
+                                    f"https://open.spotify.com/track/{tid}"
+                                    for tid in coll_ids
+                                )
+                            else:
+                                logger.warning(
+                                    {
+                                        "event": "spotify.collection_resolve_failed",
+                                        "job_id": job.job_id,
+                                        "url": url,
+                                        "error": "No track IDs returned from collection",
+                                    }
+                                )
+                                expanded.append(url)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                {
+                                    "event": "spotify.collection_resolve_failed",
+                                    "job_id": job.job_id,
+                                    "url": url,
+                                    "error": repr(exc),
+                                }
+                            )
+                            expanded.append(url)
+                    else:
+                        expanded.append(url)
+
+                if needs_update:
+                    track_ids = expanded
+                    total_tracks = len(track_ids)
+            except ImportError:
+                pass  # spotify_dl not installed; proceed with existing track_ids
 
         concurrency: int = settings.get_int("download_concurrency", _DEFAULT_CONCURRENCY)
         enable_split: bool = settings.get_bool("enable_zip_split", False)
@@ -178,69 +237,41 @@ class BatchDownloader:
                 nonlocal done_count, fail_count
 
                 async with semaphore:
-                    if job.platform == "spotify":
-                        # Spotify: download locally so the ZIP contains real audio.
-                        try:
-                            import spotify_dl as _spodl  # noqa: PLC0415
-                            from kharej.downloaders.spotify import _download_spotify_track_locally  # noqa: PLC0415
+                    from kharej.dispatcher import Job as _Job  # noqa: PLC0415
 
-                            track_id = track_url.rstrip("/").split("/")[-1]
-                            info = await asyncio.to_thread(_spodl.get_track_info, track_id)
-                            _title = info.get("title") or "Unknown"
-                            _artist = (info.get("artists") or [""])[0]
-                            audio_path = await _download_spotify_track_locally(
-                                _title, _artist, job.quality or "mp3", tmp_dir, info
-                            )
-                            downloaded_files.append(audio_path)
-                            done_count += 1
-                        except Exception as exc:
-                            logger.warning(
-                                {
-                                    "event": "batch.track_failed",
-                                    "job_id": job.job_id,
-                                    "track_url": track_url,
-                                    "error": repr(exc),
-                                }
-                            )
-                            fail_count += 1
-                            return None
-                    else:
-                        # Non-Spotify: keep existing behaviour.
-                        from kharej.dispatcher import Job as _Job  # noqa: PLC0415
-
-                        track_job = _Job(
-                            job_id=job.job_id,
-                            user_id=job.user_id,
-                            platform=job.platform,
-                            url=track_url,
-                            quality=job.quality,
-                            job_type="single",
-                            payload=job.payload,
+                    track_job = _Job(
+                        job_id=job.job_id,
+                        user_id=job.user_id,
+                        platform=job.platform,
+                        url=track_url,
+                        quality=job.quality,
+                        job_type="single",
+                        payload=job.payload,
+                    )
+                    try:
+                        refs = await track_downloader.run(
+                            track_job,
+                            s2=s2,
+                            progress=_NoopProgress(),
+                            settings=settings,
                         )
-                        try:
-                            refs = await track_downloader.run(
-                                track_job,
-                                s2=s2,
-                                progress=_NoopProgress(),
-                                settings=settings,
-                            )
-                            for ref in refs:
-                                local_name = Path(ref.key).name
-                                local_path = tmp_dir / local_name
-                                local_path.write_text(ref.key)
-                                downloaded_files.append(local_path)
-                            done_count += 1
-                        except Exception as exc:
-                            logger.warning(
-                                {
-                                    "event": "batch.track_failed",
-                                    "job_id": job.job_id,
-                                    "track_url": track_url,
-                                    "error": repr(exc),
-                                }
-                            )
-                            fail_count += 1
-                            return None
+                        for ref in refs:
+                            local_name = Path(ref.key).name
+                            local_path = tmp_dir / local_name
+                            local_path.write_text(ref.key)
+                            downloaded_files.append(local_path)
+                        done_count += 1
+                    except Exception as exc:
+                        logger.warning(
+                            {
+                                "event": "batch.track_failed",
+                                "job_id": job.job_id,
+                                "track_url": track_url,
+                                "error": repr(exc),
+                            }
+                        )
+                        fail_count += 1
+                        return None
 
                 percent = int(done_count * 100 / total_tracks) if total_tracks else 100
                 await progress.report_progress(
