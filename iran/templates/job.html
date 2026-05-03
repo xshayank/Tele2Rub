@@ -196,19 +196,13 @@
   }
 
   async function doDownload(jobId, part) {
-    try {
-      var r = await window.authFetch('/jobs/' + jobId + '/download?part=' + part + '&url=1');
-      if (!r) return;
-      if (r.ok) {
-        var data = await r.json();
-        if (data.url) {
-          window.open(data.url, '_blank');
-        }
-      }
-    } catch(e) {
-      console.error('Download failed', e);
+    var r = await window.authFetch('/jobs/' + jobId + '/download?part=' + part);
+    if (!r) return;
+    if (r.ok || r.redirected) {
+      window.open(r.url, '_blank');
     }
   }
+  window.doDownload = doDownload;
 
   cancelBtn.addEventListener('click', async function() {
     cancelBtn.disabled = true;
