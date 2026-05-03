@@ -96,17 +96,19 @@ async def _download_spotify_track_locally(
     except Exception as exc:
         logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
 
-    # Fallback: musicdl (does not require cookies, but has no cookie support)
+    # Fallback: musicdl — search then properly await the async download
     try:
         from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
 
         client = MusicdlClient()
         musicdl_query = f"{artist} - {title}" if artist else title
-        await asyncio.to_thread(client.download, musicdl_query, str(tmp_dir))
-        for ext in ("*.mp3", "*.flac", "*.m4a", "*.opus", "*.ogg"):
-            audio_path = next(tmp_dir.glob(ext), None)
-            if audio_path is not None:
-                return audio_path
+        search_result = await client.search(musicdl_query, limit=1)
+        if search_result.tracks:
+            dl_result = await client.download(search_result.tracks[0], dest_dir=tmp_dir)
+            if dl_result.success and dl_result.file_path:
+                audio_path = Path(dl_result.file_path)
+                if audio_path.exists():
+                    return audio_path
         logger.warning({"event": "spotify.musicdl_no_file", "query": musicdl_query})
     except Exception as exc:
         logger.warning({"event": "spotify.musicdl_failed", "error": repr(exc)})
@@ -128,6 +130,37 @@ def _is_spotify_collection(url: str) -> bool:
 
     path = urlparse(url).path
     return "/playlist/" in path or "/album/" in path
+
+
+async def _expand_spotify_collection(url: str, spodl: object) -> list[str]:
+    """Expand a Spotify album or playlist URL into a list of track IDs.
+
+    Uses the real ``spotify_dl`` API:
+    - Albums:    ``parse_spotify_album_id`` + ``get_spotify_album_tracks``
+    - Playlists: ``parse_spotify_playlist_id`` + ``get_spotify_playlist_tracks``
+
+    Returns a (possibly empty) list of Spotify track ID strings.
+    Raises on network/API errors so callers can log and fall back.
+    """
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    path = urlparse(url).path
+
+    if "/album/" in path:
+        album_id: str | None = spodl.parse_spotify_album_id(url)  # type: ignore[attr-defined]
+        if not album_id:
+            return []
+        _, track_ids = await asyncio.to_thread(spodl.get_spotify_album_tracks, album_id)  # type: ignore[attr-defined]
+        return list(track_ids or [])
+
+    if "/playlist/" in path:
+        playlist_id: str | None = spodl.parse_spotify_playlist_id(url)  # type: ignore[attr-defined]
+        if not playlist_id:
+            return []
+        _, track_ids = await asyncio.to_thread(spodl.get_spotify_playlist_tracks, playlist_id)  # type: ignore[attr-defined]
+        return list(track_ids or [])
+
+    return []
 
 
 class SpotifyDownloader:
@@ -161,44 +194,55 @@ class SpotifyDownloader:
         # Playlist / Album  — expand to individual tracks and download each
         # ------------------------------------------------------------------
         if _is_spotify_collection(job.url):
-            tracks: list[dict] | None = None
-            for getter in ("get_playlist_tracks", "get_album_tracks", "list_collection_tracks"):
-                fn = getattr(_spodl, getter, None)
-                if fn is None:
-                    continue
-                try:
-                    tracks = await asyncio.to_thread(fn, job.url)
-                    if tracks:
-                        break
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        {
-                            "event": "spotify.collection_getter_failed",
-                            "getter": getter,
-                            "job_id": job.job_id,
-                            "error": repr(exc),
-                        }
-                    )
-
-            if not tracks:
+            track_id_list: list[str] = []
+            try:
+                track_id_list = await _expand_spotify_collection(job.url, _spodl)
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     {
-                        "event": "spotify.collection_fallback",
+                        "event": "spotify.collection_resolve_failed",
                         "job_id": job.job_id,
                         "url": job.url,
-                        "note": "Could not resolve collection tracks; treating URL as single item",
+                        "error": repr(exc),
                     }
                 )
-                # Fall through to single-track logic below
-            else:
-                return await self._run_collection(
-                    job=job,
-                    tracks=tracks,
-                    s2=s2,
-                    progress=progress,
-                    ytdlp_bin=ytdlp_bin,
-                    cookies_path=cookies_path,
-                )
+
+            if track_id_list:
+                # Fetch per-track metadata to build track info dicts
+                tracks: list[dict] = []
+                for tid in track_id_list:
+                    try:
+                        info_item: dict = await asyncio.to_thread(_spodl.get_track_info, tid)
+                        tracks.append(info_item)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            {
+                                "event": "spotify.collection_track_info_failed",
+                                "job_id": job.job_id,
+                                "track_id": tid,
+                                "error": repr(exc),
+                            }
+                        )
+
+                if tracks:
+                    return await self._run_collection(
+                        job=job,
+                        tracks=tracks,
+                        s2=s2,
+                        progress=progress,
+                        ytdlp_bin=ytdlp_bin,
+                        cookies_path=cookies_path,
+                    )
+
+            logger.warning(
+                {
+                    "event": "spotify.collection_fallback",
+                    "job_id": job.job_id,
+                    "url": job.url,
+                    "note": "Could not resolve collection tracks; treating URL as single item",
+                }
+            )
+            # Fall through to single-track logic below
 
         # ------------------------------------------------------------------
         # Single track

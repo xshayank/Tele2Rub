@@ -711,13 +711,19 @@ async def test_spotify_downloader_playlist_expands_tracks() -> None:
     """SpotifyDownloader.run should download each track in a playlist."""
     from kharej.downloaders.spotify import SpotifyDownloader
 
-    playlist_tracks = [
-        {"title": "Track One", "artists": ["Artist A"]},
-        {"title": "Track Two", "artists": ["Artist B"]},
-    ]
-
     fake_mod = MagicMock()
-    fake_mod.get_playlist_tracks = MagicMock(return_value=playlist_tracks)
+    # Mock the real spotify_dl API used for playlist expansion
+    fake_mod.parse_spotify_playlist_id = MagicMock(return_value="37i9dQZF1DXcBWIGoYBM5M")
+    fake_mod.get_spotify_playlist_tracks = MagicMock(
+        return_value=({"name": "Test Playlist"}, ["tid1", "tid2"])
+    )
+    # get_track_info is called once per track to fetch metadata
+    fake_mod.get_track_info = MagicMock(
+        side_effect=[
+            {"title": "Track One", "artists": ["Artist A"], "cover_url": None},
+            {"title": "Track Two", "artists": ["Artist B"], "cover_url": None},
+        ]
+    )
     fake_yt_dlp = _make_fake_yt_dlp()
 
     refs_returned = [
@@ -738,7 +744,8 @@ async def test_spotify_downloader_playlist_expands_tracks() -> None:
         result = await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
     assert len(result) == 2
-    fake_mod.get_playlist_tracks.assert_called_once_with(job.url)
+    fake_mod.get_spotify_playlist_tracks.assert_called_once_with("37i9dQZF1DXcBWIGoYBM5M")
+    assert fake_mod.get_track_info.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -746,16 +753,20 @@ async def test_spotify_downloader_album_expands_tracks() -> None:
     """SpotifyDownloader.run should download each track in an album."""
     from kharej.downloaders.spotify import SpotifyDownloader
 
-    album_tracks = [
-        {"title": "Song A", "artists": ["Band"]},
-        {"title": "Song B", "artists": ["Band"]},
-        {"title": "Song C", "artists": ["Band"]},
-    ]
-
     fake_mod = MagicMock()
-    # No get_playlist_tracks — use get_album_tracks
-    del fake_mod.get_playlist_tracks
-    fake_mod.get_album_tracks = MagicMock(return_value=album_tracks)
+    # Mock the real spotify_dl API used for album expansion
+    fake_mod.parse_spotify_album_id = MagicMock(return_value="6dVIqQ8qmQ5GBnJ9shOYGE")
+    fake_mod.get_spotify_album_tracks = MagicMock(
+        return_value=({"name": "Test Album"}, ["tid1", "tid2", "tid3"])
+    )
+    # get_track_info is called once per track
+    fake_mod.get_track_info = MagicMock(
+        side_effect=[
+            {"title": "Song A", "artists": ["Band"], "cover_url": None},
+            {"title": "Song B", "artists": ["Band"], "cover_url": None},
+            {"title": "Song C", "artists": ["Band"], "cover_url": None},
+        ]
+    )
     fake_yt_dlp = _make_fake_yt_dlp()
 
     dummy_ref = S2ObjectRef(key=f"media/{_JOB_ID}/x.mp3", size=100, mime="audio/mpeg", sha256="c" * 64)
@@ -773,20 +784,20 @@ async def test_spotify_downloader_album_expands_tracks() -> None:
         result = await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
     assert len(result) == 3
-    fake_mod.get_album_tracks.assert_called_once_with(job.url)
+    fake_mod.get_spotify_album_tracks.assert_called_once_with("6dVIqQ8qmQ5GBnJ9shOYGE")
+    assert fake_mod.get_track_info.call_count == 3
 
 
 @pytest.mark.asyncio
 async def test_spotify_downloader_collection_fallback_when_no_getter() -> None:
-    """SpotifyDownloader.run should fall back to single-track when collection getters are absent."""
+    """SpotifyDownloader.run should fall back to single-track when collection expansion fails."""
     from kharej.downloaders.spotify import SpotifyDownloader
 
     fake_mod = MagicMock()
-    # No collection getters available
-    fake_mod.get_playlist_tracks = None
-    fake_mod.get_album_tracks = None
-    fake_mod.list_collection_tracks = None
+    # Make collection expansion fail (parse returns None → no expansion)
+    fake_mod.parse_spotify_playlist_id = MagicMock(return_value=None)
     fake_mod.parse_spotify_track_id = MagicMock(return_value="trackxyz")
+    # get_track_info is called by the single-track path
     fake_mod.get_track_info = MagicMock(
         return_value={"title": "Solo Track", "artists": ["Solo Artist"], "cover_url": None}
     )
@@ -807,3 +818,61 @@ async def test_spotify_downloader_collection_fallback_when_no_getter() -> None:
     # Should fall back to single track download
     assert len(result) >= 1
     fake_mod.parse_spotify_track_id.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_spotify_musicdl_download_is_awaited() -> None:
+    """_download_spotify_track_locally must properly await MusicdlClient.download (not wrap in thread)."""
+    from kharej.downloaders.spotify import _download_spotify_track_locally
+
+    # Simulate yt-dlp failing so musicdl fallback is triggered.
+    fake_yt_dlp = MagicMock()
+
+    class _FailYDL:
+        def __init__(self, opts: dict) -> None:
+            pass
+
+        def __enter__(self) -> "_FailYDL":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def download(self, queries: list) -> None:
+            raise RuntimeError("yt-dlp unavailable")
+
+    fake_yt_dlp.YoutubeDL = _FailYDL
+
+    # Build a fake MusicdlClient whose download is an AsyncMock (verifies it's awaited).
+    download_mock = AsyncMock(return_value=MagicMock(success=False, file_path=None))
+
+    class _FakeMusicdlClient:
+        async def search(self, query: str, limit: int = 5) -> object:
+            track = MagicMock()
+            result = MagicMock()
+            result.tracks = [track]
+            return result
+
+        download = download_mock  # noqa: RUF012
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        # Patch yt_dlp module and MusicdlClient at its source location
+        with patch.dict("sys.modules", {"yt_dlp": fake_yt_dlp}):
+            with patch(
+                "rubetunes.providers.musicdl.client.MusicdlClient",
+                return_value=_FakeMusicdlClient(),
+            ):
+                try:
+                    await _download_spotify_track_locally(
+                        "Test Song", "Test Artist", "mp3", tmp_dir, {}
+                    )
+                except Exception:
+                    pass  # We only care that download was awaited, not that a file was found
+
+    # The critical assertion: download was awaited (AsyncMock records awaits)
+    assert download_mock.await_count >= 1, (
+        "MusicdlClient.download must be awaited, not called in a thread"
+    )
