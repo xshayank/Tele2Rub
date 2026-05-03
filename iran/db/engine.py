@@ -97,7 +97,7 @@ def __getattr__(name: str) -> object:
 async def run_migrations() -> None:
     """Run ``alembic upgrade head`` programmatically against the live database.
 
-    Safe to call on every startup — Alembic is idempotent and skips
+    Safe to call on every startup - Alembic is idempotent and skips
     revisions that have already been applied.  When ``DATABASE_URL`` is
     empty (e.g. during unit tests that supply their own engine) this
     function is a no-op.
@@ -117,7 +117,7 @@ async def run_migrations() -> None:
     except (ImportError, AttributeError, ValueError):
         url = os.environ.get("IRAN_DATABASE_URL", "")
         # Pydantic-settings handles common boolean strings ("false", "no", "0"
-        # → False) automatically for the RUN_MIGRATIONS bool field.  Replicate
+        # -> False) automatically for the RUN_MIGRATIONS bool field.  Replicate
         # the same set here for the rare fallback path (no settings available).
         run_flag = os.environ.get("IRAN_RUN_MIGRATIONS", "1").strip() not in ("0", "false", "no")
 
@@ -146,7 +146,7 @@ async def run_migrations() -> None:
         )
     except Exception as exc:
         raise RuntimeError(
-            f"Database migration failed — Alembic could not run 'upgrade head'.\n"
+            f"Database migration failed - Alembic could not run 'upgrade head'.\n"
             f"  alembic.ini  : {alembic_ini}\n"
             f"  migrations   : {alembic_ini.parent / 'migrations'}\n"
             f"  database url : {url!r}\n"
