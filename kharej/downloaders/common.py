@@ -4,11 +4,13 @@ Provides:
 - :func:`safe_filename` — sanitize a name for use as a filesystem / S2 key component.
 - :func:`get_downloads_dir` — resolve the configurable base download directory.
 - :func:`cleanup_path` — best-effort removal of a file or directory after upload.
+- :func:`resolve_cookies_path` — resolve the yt-dlp cookies.txt path from settings / env / auto-discovery.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -88,6 +90,63 @@ def make_temp_job_dir(job_id: str) -> Path:
     """
     tmp = Path(tempfile.mkdtemp(prefix=f"kharej_{job_id}_"))
     return tmp
+
+
+# ---------------------------------------------------------------------------
+# Cookie resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_cookies_path(settings: "KharejSettings") -> str | None:
+    """Resolve the cookies.txt path using a priority chain.
+
+    Priority:
+    1. ``settings`` key ``cookies_path`` (set via ``KHAREJ_COOKIES_PATH`` env var or admin API)
+    2. Auto-discovery: ``kharej/cookies.txt``, then repo root ``cookies.txt``
+
+    Returns the first existing file path as a string, or ``None`` when nothing
+    is found.  When ``None`` is returned a warning is logged instructing the
+    operator to set ``KHAREJ_COOKIES_PATH``.
+    """
+    # 1. Settings / env var
+    configured = settings.get("cookies_path") or os.environ.get("KHAREJ_COOKIES_PATH")
+    if configured:
+        if Path(configured).is_file():
+            logger.info({
+                "event": "cookies.configured",
+                "path": configured,
+            })
+            return str(configured)
+        logger.warning({
+            "event": "cookies.configured_missing",
+            "path": configured,
+            "msg": "Configured cookies file not found. Set KHAREJ_COOKIES_PATH to a valid path.",
+        })
+
+    # 2. Auto-discovery
+    # common.py lives at kharej/downloaders/common.py
+    _kharej_dir = Path(__file__).parent.parent   # kharej/
+    _repo_root = _kharej_dir.parent              # repo root
+    for _candidate in [
+        _kharej_dir / "cookies.txt",
+        _repo_root / "cookies.txt",
+    ]:
+        if _candidate.is_file():
+            logger.info({
+                "event": "cookies.autodiscovered",
+                "path": str(_candidate),
+            })
+            return str(_candidate)
+
+    logger.warning({
+        "event": "cookies.not_found",
+        "msg": (
+            "No cookies.txt found. YouTube may reject requests as a bot. "
+            "Set the KHAREJ_COOKIES_PATH env var to a valid Netscape cookies file, "
+            "or configure cookies_from_browser in settings."
+        ),
+    })
+    return None
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -29,7 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from kharej.contracts import S2ObjectRef, make_media_key
-from kharej.downloaders.common import safe_filename
+from kharej.downloaders.common import resolve_cookies_path, safe_filename
 
 if TYPE_CHECKING:
     from kharej.dispatcher import Job
@@ -41,9 +40,6 @@ logger = logging.getLogger("kharej.downloaders.youtube")
 
 _PERCENT_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)\s*%")
 _SPEED_RE = re.compile(r"at\s+([\d.]+\s*\S+/s)")
-
-# Hardcoded cookies path — primary location
-_HARDCODED_COOKIES_PATH = Path("/root/newrube/RubeTunes/kharej/cookies.txt")
 
 
 def _find_ytdlp(settings: "KharejSettings") -> str:
@@ -76,6 +72,7 @@ def _find_ytdlp(settings: "KharejSettings") -> str:
 
 _YOUTUBE_FORMATS: dict[str, str] = {
     "mp3": "bestaudio/best",
+    "flac": "bestaudio/best",
     "mp4": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
     "mp4-1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
     "mp4-720p": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]",
@@ -87,15 +84,34 @@ _VALID_QUALITIES: frozenset[str] = frozenset(_YOUTUBE_FORMATS)
 
 _AUDIO_FORMAT = "mp3"
 
+# Audio quality strings that trigger --extract-audio in yt-dlp
+_AUDIO_QUALITIES: frozenset[str] = frozenset({
+    "mp3", "flac", "opus", "m4a", "ogg", "vorbis", "aac", "wav", "alac",
+})
+
 
 def _resolve_format(quality: str) -> str:
-    """Map a quality hint string to a yt-dlp format selector."""
-    return _YOUTUBE_FORMATS.get(quality.lower(), _YOUTUBE_FORMATS[_AUDIO_FORMAT])
+    """Map a quality hint string to a yt-dlp format selector.
+
+    Known quality keys (e.g. ``"mp3"``, ``"mp4-1080p"``) are mapped to their
+    yt-dlp format string.  Unknown values are passed through unchanged so that
+    callers can supply a raw yt-dlp format selector directly.
+    """
+    return _YOUTUBE_FORMATS.get(quality.lower(), quality)
 
 
 def _is_audio_quality(quality: str) -> bool:
     """Return True if *quality* implies audio-only extraction."""
-    return quality.lower() == "mp3"
+    return quality.lower() in _AUDIO_QUALITIES
+
+
+def _audio_codec(quality: str) -> str:
+    """Return the FFmpeg audio codec name to use for *quality*.
+
+    Falls back to ``"mp3"`` for unrecognised quality strings.
+    """
+    q = quality.lower()
+    return q if q in _AUDIO_QUALITIES else "mp3"
 
 
 def _build_command(
@@ -131,7 +147,7 @@ def _build_command(
     if _is_audio_quality(quality):
         cmd += [
             "--extract-audio",
-            "--audio-format", _AUDIO_FORMAT,
+            "--audio-format", _audio_codec(quality),
             "--audio-quality", "0",
         ]
     else:
@@ -184,47 +200,8 @@ def _run_ytdlp_subprocess(
 
 
 def _resolve_cookies_path(settings: "KharejSettings") -> str | None:
-    """Resolve the cookies.txt path using a priority chain.
-
-    Priority:
-    1. Hardcoded path: /root/newrube/RubeTunes/kharej/cookies.txt
-    2. settings key ``cookies_path`` (set via KHAREJ_COOKIES_PATH env var or admin API)
-    3. Auto-discovery: kharej/cookies.txt, then repo root cookies.txt
-    """
-    # 1. Hardcoded primary path
-    if _HARDCODED_COOKIES_PATH.is_file():
-        logger.info({
-            "event": "youtube.cookies_hardcoded",
-            "path": str(_HARDCODED_COOKIES_PATH),
-        })
-        return str(_HARDCODED_COOKIES_PATH)
-
-    # 2. Settings / env var
-    configured = settings.get("cookies_path") or os.environ.get("KHAREJ_COOKIES_PATH")
-    if configured and Path(configured).is_file():
-        return str(configured)
-    if configured:
-        logger.warning({
-            "event": "youtube.cookies_configured_missing",
-            "path": configured,
-        })
-
-    # 3. Auto-discovery
-    _kharej_dir = Path(__file__).parent.parent   # kharej/
-    _repo_root = _kharej_dir.parent              # repo root
-    for _candidate in [
-        _kharej_dir / "cookies.txt",
-        _repo_root / "cookies.txt",
-    ]:
-        if _candidate.is_file():
-            logger.info({
-                "event": "youtube.cookies_autodiscovered",
-                "path": str(_candidate),
-            })
-            return str(_candidate)
-
-    logger.warning({"event": "youtube.cookies_not_found", "msg": "No cookies.txt found anywhere"})
-    return None
+    """Resolve the cookies.txt path.  Delegates to :func:`~kharej.downloaders.common.resolve_cookies_path`."""
+    return resolve_cookies_path(settings)
 
 
 class YoutubeDownloader:
@@ -243,6 +220,7 @@ class YoutubeDownloader:
         loop = asyncio.get_running_loop()
 
         quality: str = job.quality or settings.get("default_audio_quality") or "mp3"
+        # Restrict to known quality keys so only validated strings reach _build_command.
         if quality.lower() not in _VALID_QUALITIES:
             quality = "mp3"
 
