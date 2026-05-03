@@ -101,8 +101,16 @@ async def _download_spotify_track_locally(
 
 
 def _is_spotify_collection(url: str) -> bool:
-    """Return True if the URL points to a Spotify playlist or album."""
-    return "/playlist/" in url or "/album/" in url
+    """Return True if the URL points to a Spotify playlist or album.
+
+    Uses ``urllib.parse`` to check the path component so that the check is
+    not confused by query parameters or fragments that happen to contain
+    the substrings ``/playlist/`` or ``/album/``.
+    """
+    from urllib.parse import urlparse  # noqa: PLC0415
+
+    path = urlparse(url).path
+    return "/playlist/" in path or "/album/" in path
 
 
 class SpotifyDownloader:
