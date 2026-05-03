@@ -7,8 +7,9 @@ parts when the total exceeds a size threshold) and uploading the parts to S2.
 
 Flow
 ----
-1. Resolve the list of track URLs from ``job.payload.track_ids`` (or a mock
-   list when ``track_ids`` is absent, so the plumbing is testable independently).
+1. Resolve the list of track URLs from ``job.payload.track_ids`` (or
+   ``job.url`` directly when ``track_ids`` is absent, so that yt-dlp /
+   spotdl can handle playlist/album URLs natively).
 2. Run the appropriate per-platform downloader for each track with bounded
    concurrency (``Settings.get_int("download_concurrency", 2)``).
 3. Emit ``job.progress`` after each track completes (monotonically increasing
@@ -113,18 +114,19 @@ class BatchDownloader:
         track_ids: list[str] = list(payload.track_ids or [])
         total_tracks: int = payload.total_tracks or len(track_ids)
 
-        # When no track_ids were provided (e.g. very large collections), use a
-        # single-item mock list so the plumbing is still exercised.
+        # When no track_ids were provided, fall back to the collection URL so
+        # that yt-dlp/spotdl can handle the playlist/album natively.
         if not track_ids:
             logger.warning(
                 {
                     "event": "batch.no_track_ids",
                     "job_id": job.job_id,
-                    "note": "track_ids absent; using empty list",
+                    "note": "track_ids absent; falling back to downloading job.url directly",
                 }
             )
-            track_ids = []
-            total_tracks = 0
+            # Use the collection URL directly — yt-dlp/spotdl can handle playlist URLs natively.
+            track_ids = [job.url]
+            total_tracks = 1
 
         concurrency: int = settings.get_int("download_concurrency", _DEFAULT_CONCURRENCY)
         enable_split: bool = settings.get_bool("enable_zip_split", False)
@@ -370,7 +372,10 @@ def _build_track_urls(platform: str, track_ids: list[str], collection_url: str) 
     For unknown platforms the IDs are passed through unchanged.
     """
     if platform == "spotify":
-        return [f"https://open.spotify.com/track/{tid}" for tid in track_ids]
+        return [
+            tid if tid.startswith("http") else f"https://open.spotify.com/track/{tid}"
+            for tid in track_ids
+        ]
     if platform == "youtube":
         return [
             tid if tid.startswith("http") else f"https://youtu.be/{tid}"
