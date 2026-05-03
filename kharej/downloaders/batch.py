@@ -113,12 +113,13 @@ class BatchDownloader:
         collection_name: str = payload.collection_name or safe_filename(job.url) or "batch"
         # Distinguish absent (None) track_ids from explicitly empty ([]) ones.
         _raw_ids = payload.track_ids
-        track_ids: list[str] = list(_raw_ids) if _raw_ids is not None else []
+        track_ids_absent = _raw_ids is None
+        track_ids: list[str] = list(_raw_ids) if not track_ids_absent else []
         total_tracks: int = payload.total_tracks or len(track_ids)
 
         # When track_ids was absent in the payload (None), fall back to the
-        # collection URL so that yt-dlp / spotdl can handle it natively.
-        if _raw_ids is None:
+        # collection URL so that yt-dlp / spotify_dl can handle it natively.
+        if track_ids_absent:
             logger.warning(
                 {
                     "event": "batch.no_track_ids",
@@ -126,7 +127,7 @@ class BatchDownloader:
                     "note": "track_ids absent; falling back to downloading job.url directly",
                 }
             )
-            # Use the collection URL directly — yt-dlp/spotdl can handle playlist URLs natively.
+            # Use the collection URL directly — yt-dlp/spotify_dl can handle playlist URLs natively.
             track_ids = [job.url]
             total_tracks = 1
 

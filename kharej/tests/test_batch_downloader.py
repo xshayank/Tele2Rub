@@ -116,6 +116,7 @@ def _make_settings(
     concurrency: int = 2,
     enable_split: bool = False,
     threshold_mb: int = 200,
+    cookies_path: str | None = None,
 ) -> MagicMock:
     settings = MagicMock()
     _data: dict = {
@@ -123,6 +124,8 @@ def _make_settings(
         "enable_zip_split": enable_split,
         "zip_split_threshold_mb": threshold_mb,
     }
+    if cookies_path is not None:
+        _data["cookies_path"] = cookies_path
     settings.get_int = MagicMock(
         side_effect=lambda key, default=0: int(_data.get(key, default))
     )
@@ -280,6 +283,83 @@ class TestBatchDownloaderTrackCalls:
 
         assert track_dl.run.call_count == 0
 
+
+# ===========================================================================
+# Cookies forwarding: batch → SpotifyDownloader → yt-dlp
+# ===========================================================================
+
+
+class TestBatchSpotifyCookiesForwarded:
+    """Verify that cookies in batch settings reach yt-dlp inside SpotifyDownloader.
+
+    This is the regression test for the bug where batch._download_one called
+    _download_spotify_track_locally without the cookies_path argument, causing
+    yt-dlp bot-detection failures even when a valid cookies.txt was configured.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cookies_forwarded_to_ytdlp(self, tmp_path: Path) -> None:
+        """Cookies set in batch settings must be forwarded to yt-dlp via SpotifyDownloader."""
+        from kharej.downloaders.spotify import SpotifyDownloader
+
+        cookies_file = tmp_path / "cookies.txt"
+        cookies_file.write_text("# Netscape HTTP Cookie File\n")
+
+        captured_opts: list[dict] = []
+
+        fake_spodl = MagicMock()
+        fake_spodl.parse_spotify_track_id = MagicMock(return_value="testtrackid1234567890")
+        fake_spodl.get_track_info = MagicMock(
+            return_value={
+                "title": "Cookie Test Track",
+                "artists": ["Test Artist"],
+                "cover_url": None,
+            }
+        )
+
+        class _FakeYDL:
+            def __init__(self, opts: dict) -> None:
+                captured_opts.append(dict(opts))
+
+            def __enter__(self) -> "_FakeYDL":
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                pass
+
+            def download(self, queries: list) -> None:
+                out_dir = Path(captured_opts[-1].get("outtmpl", ".")).parent
+                (out_dir / "cookie_test.mp3").write_bytes(b"\xff\xfb" * 16)
+
+        fake_yt_dlp = MagicMock()
+        fake_yt_dlp.YoutubeDL = _FakeYDL
+
+        # Use a real SpotifyDownloader as the per-track downloader so the
+        # full cookies forwarding chain is exercised.
+        s2 = _make_s2(_make_ref(f"media/{_JOB_ID}/cookie_test.mp3"))
+        batch = BatchDownloader(per_track_downloaders={"spotify": SpotifyDownloader()})
+        job = _make_job(
+            track_ids=["https://open.spotify.com/track/testtrackid1234567890"],
+            total_tracks=1,
+        )
+        progress = _make_progress()
+        settings = _make_settings(cookies_path=str(cookies_file))
+
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl, "yt_dlp": fake_yt_dlp}):
+            await batch.run(job, s2=s2, progress=progress, settings=settings)
+
+        assert captured_opts, "YoutubeDL was never instantiated in the batch Spotify path"
+        assert captured_opts[0].get("cookiefile") == str(cookies_file), (
+            f"cookiefile not forwarded to yt-dlp; got opts keys: {list(captured_opts[0])}"
+        )
+
+
+# ===========================================================================
+# Failure scenarios (restored to own section)
+# ===========================================================================
+
+
+class TestBatchDownloaderFailureScenarios:
     @pytest.mark.asyncio
     async def test_partial_failure_does_not_abort(self, tmp_path: Path) -> None:
         """A failing track must not abort the rest of the batch."""
