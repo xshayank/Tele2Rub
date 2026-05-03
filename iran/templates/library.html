@@ -134,10 +134,11 @@
   });
 
   async function doDownload(jobId) {
-    var r = await window.authFetch('/jobs/' + jobId + '/download?part=0');
+    var r = await window.authFetch('/jobs/' + jobId + '/download?part=0&url=1');
     if (!r) return;
-    if (r.ok || r.redirected) {
-      window.open(r.url, '_blank');
+    if (r.ok) {
+      var data = await r.json();
+      window.open(data.url, '_blank');
     }
   }
   window.doDownload = doDownload;
