@@ -42,6 +42,9 @@ logger = logging.getLogger("kharej.downloaders.youtube")
 _PERCENT_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)\s*%")
 _SPEED_RE = re.compile(r"at\s+([\d.]+\s*\S+/s)")
 
+# Hardcoded cookies path — primary location
+_HARDCODED_COOKIES_PATH = Path("/root/newrube/RubeTunes/kharej/cookies.txt")
+
 
 def _find_ytdlp(settings: "KharejSettings") -> str:
     """Return the path to the yt-dlp executable."""
@@ -117,6 +120,8 @@ def _build_command(
         "--progress",
         "--newline",
         "--no-warnings",
+        # Enable remote JS challenge solver for YouTube bot detection bypass
+        "--remote-components", "ejs:npm",
     ]
     if cookies_path and Path(cookies_path).is_file():
         cmd += ["--cookies", cookies_path]
@@ -181,6 +186,50 @@ def _run_ytdlp_subprocess(
         )
 
 
+def _resolve_cookies_path(settings: "KharejSettings") -> str | None:
+    """Resolve the cookies.txt path using a priority chain.
+
+    Priority:
+    1. Hardcoded path: /root/newrube/RubeTunes/kharej/cookies.txt
+    2. settings key ``cookies_path`` (set via KHAREJ_COOKIES_PATH env var or admin API)
+    3. Auto-discovery: kharej/cookies.txt, then repo root cookies.txt
+    """
+    # 1. Hardcoded primary path
+    if _HARDCODED_COOKIES_PATH.is_file():
+        logger.info({
+            "event": "youtube.cookies_hardcoded",
+            "path": str(_HARDCODED_COOKIES_PATH),
+        })
+        return str(_HARDCODED_COOKIES_PATH)
+
+    # 2. Settings / env var
+    configured = settings.get("cookies_path") or os.environ.get("KHAREJ_COOKIES_PATH")
+    if configured and Path(configured).is_file():
+        return str(configured)
+    if configured:
+        logger.warning({
+            "event": "youtube.cookies_configured_missing",
+            "path": configured,
+        })
+
+    # 3. Auto-discovery
+    _kharej_dir = Path(__file__).parent.parent   # kharej/
+    _repo_root = _kharej_dir.parent              # repo root
+    for _candidate in [
+        _kharej_dir / "cookies.txt",
+        _repo_root / "cookies.txt",
+    ]:
+        if _candidate.is_file():
+            logger.info({
+                "event": "youtube.cookies_autodiscovered",
+                "path": str(_candidate),
+            })
+            return str(_candidate)
+
+    logger.warning({"event": "youtube.cookies_not_found", "msg": "No cookies.txt found anywhere"})
+    return None
+
+
 class YoutubeDownloader:
     """Download a single YouTube video/audio track and upload it to Arvan S2."""
 
@@ -198,26 +247,7 @@ class YoutubeDownloader:
 
         quality: str = job.quality or settings.get("default_audio_quality") or "mp3"
 
-        # Resolve cookies path — check settings first, then env var fallback,
-        # then auto-discover cookies.txt in kharej/ and repo root.
-        cookies_path: str | None = (
-            settings.get("cookies_path")
-            or os.environ.get("KHAREJ_COOKIES_PATH")
-        )
-        if not cookies_path:
-            _kharej_dir = Path(__file__).parent.parent   # kharej/
-            _repo_root = _kharej_dir.parent              # repo root
-            for _candidate in [
-                _kharej_dir / "cookies.txt",
-                _repo_root / "cookies.txt",
-            ]:
-                if _candidate.is_file():
-                    cookies_path = str(_candidate)
-                    logger.info({
-                        "event": "youtube.cookies_autodiscovered",
-                        "path": cookies_path,
-                    })
-                    break
+        cookies_path = _resolve_cookies_path(settings)
 
         ytdlp_bin = _find_ytdlp(settings)
 
