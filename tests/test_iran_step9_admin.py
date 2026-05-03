@@ -136,7 +136,7 @@ async def _create_admin(session_factory) -> tuple[str, str]:
 
     from iran.db.models import User
 
-    _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    _pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     user_id = str(uuid.uuid4())
     async with session_factory() as s:
         user = User(
@@ -158,7 +158,7 @@ async def _create_user(session_factory, *, status: str = "pending_approval") -> 
 
     from iran.db.models import Registration, User
 
-    _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    _pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     user_id = str(uuid.uuid4())
     async with session_factory() as s:
         user = User(
@@ -265,7 +265,7 @@ class TestAdminAuth:
 
         from iran.db.models import User
 
-        _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        _pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
         uid = str(uuid.uuid4())
         async with session_factory() as s:
             s.add(
@@ -451,7 +451,7 @@ class TestAdminJobs:
 
         from passlib.context import CryptContext
 
-        _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        _pwd = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
         uid = str(uuid.uuid4())
         jid = str(uuid.uuid4())
         async with session_factory() as s:

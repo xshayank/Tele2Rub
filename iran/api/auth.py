@@ -44,12 +44,19 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # Password hashing
 # ---------------------------------------------------------------------------
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+_pwd_context = CryptContext(
+    schemes=["pbkdf2_sha256"],
+    deprecated="auto",
+    pbkdf2_sha256__rounds=600000,
+)
 
 
 def hash_password(plain: str) -> str:
-    """Return the bcrypt hash of *plain* (cost factor 12)."""
-    return _pwd_context.hash(plain)
+    """Return the pbkdf2_sha256 hash of *plain*."""
+    try:
+        return _pwd_context.hash(plain)
+    except ValueError as exc:
+        raise ValueError(f"Password hashing failed: {exc}") from exc
 
 
 def verify_password(plain: str, hashed: str) -> bool:
