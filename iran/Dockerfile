@@ -28,6 +28,9 @@ COPY iran/ ./iran/
 # Copy the compiled React SPA into the static files directory
 COPY --from=frontend /app/web/dist ./iran/static/
 
+# Download the Vazirmatn font at build time (no CDN requests at runtime)
+RUN python iran/fetch_fonts.py
+
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 
