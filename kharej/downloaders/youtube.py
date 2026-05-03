@@ -1,14 +1,15 @@
 """YouTube downloader adapter for the Kharej VPS worker.
 
-Downloads a single video/audio track via ``yt-dlp``, uploads the result to
-Arvan S2, and emits progress through :class:`~kharej.progress_reporter.ProgressReporter`.
+Downloads a single video/audio track via the ``yt-dlp`` executable,
+uploads the result to Arvan S2, and emits progress through
+:class:`~kharej.progress_reporter.ProgressReporter`.
 
-Progress hook flow
-------------------
-``yt_dlp.YoutubeDL`` calls the progress hook on the download thread.  The hook
-parses ``_percent_str`` / ``downloaded_bytes`` / ``total_bytes`` into an integer
-0–100 and ``_speed_str`` into a human-readable speed string, then schedules a
-``progress.report_progress()`` coroutine via ``asyncio.run_coroutine_threadsafe``.
+Progress parsing
+----------------
+``yt-dlp`` is invoked with ``--progress --newline`` so each progress update
+appears on its own stdout line.  Lines matching ``[download]  XX.X% of ...``
+are parsed via :data:`_PERCENT_RE` and scheduled back to the async event loop
+via ``asyncio.run_coroutine_threadsafe``.
 
 S2 key
 ------
@@ -19,7 +20,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
@@ -35,206 +39,36 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("kharej.downloaders.youtube")
 
-# ---------------------------------------------------------------------------
-# Progress-hook helpers (pure functions, easily unit-tested)
-# ---------------------------------------------------------------------------
-
-_PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_PERCENT_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)\s*%")
+_SPEED_RE = re.compile(r"at\s+([\d.]+\s*\S+/s)")
 
 
-def parse_percent(hook_info: dict) -> int:
-    """Extract an integer 0–100 percent from a yt-dlp progress-hook dict.
+def _find_ytdlp(settings: "KharejSettings") -> str:
+    """Return the path to the yt-dlp executable."""
+    # 1. Explicit override from settings
+    explicit = settings.get("ytdlp_path")
+    if explicit and Path(explicit).is_file():
+        return str(explicit)
 
-    Tries ``_percent_str`` first, then falls back to
-    ``downloaded_bytes / total_bytes`` arithmetic.  Returns 0 when neither
-    value is available.
-    """
-    percent_str: str = hook_info.get("_percent_str", "")
-    m = _PERCENT_RE.search(percent_str)
-    if m:
-        return min(100, int(float(m.group(1))))
+    # 2. On PATH
+    found = shutil.which("yt-dlp")
+    if found:
+        return found
 
-    downloaded: int | None = hook_info.get("downloaded_bytes")
-    total: int | None = hook_info.get("total_bytes") or hook_info.get("total_bytes_estimate")
-    if downloaded is not None and total:
-        return min(100, int(downloaded * 100 / total))
+    # 3. Common fallback locations
+    for candidate in [
+        "/usr/local/bin/yt-dlp",
+        "/usr/bin/yt-dlp",
+        str(Path(__file__).parent.parent.parent / "yt-dlp"),  # repo root
+        str(Path(__file__).parent.parent / "yt-dlp"),         # kharej/
+    ]:
+        if Path(candidate).is_file():
+            return candidate
 
-    return 0
-
-
-def parse_speed(hook_info: dict) -> str | None:
-    """Extract a human-readable speed string from a yt-dlp progress-hook dict.
-
-    Returns ``None`` when the speed is not (yet) available.
-    """
-    speed_str: str | None = hook_info.get("_speed_str")
-    if speed_str:
-        return speed_str.strip()
-    return None
-
-
-def parse_eta(hook_info: dict) -> int | None:
-    """Extract ETA in seconds from a yt-dlp progress-hook dict."""
-    eta = hook_info.get("eta")
-    if eta is not None:
-        try:
-            return int(eta)
-        except (TypeError, ValueError):
-            pass
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Downloader
-# ---------------------------------------------------------------------------
-
-
-class YoutubeDownloader:
-    """Download a single YouTube video/audio track and upload it to Arvan S2."""
-
-    platform: ClassVar[str] = "youtube"
-
-    async def run(
-        self,
-        job: Job,
-        *,
-        s2: S2Client,
-        progress: ProgressReporter,
-        settings: KharejSettings,
-    ) -> list[S2ObjectRef]:
-        """Download, upload, return one :class:`~kharej.contracts.S2ObjectRef`."""
-        loop = asyncio.get_running_loop()
-
-        # ------------------------------------------------------------------
-        # Build yt-dlp options
-        # ------------------------------------------------------------------
-        quality: str = job.quality or settings.get("default_audio_quality") or "bestaudio/best"
-        cookies_path: str | None = settings.get("cookies_path")
-
-        with tempfile.TemporaryDirectory(prefix=f"kharej_yt_{job.job_id}_") as tmp_str:
-            tmp_dir = Path(tmp_str)
-            outtmpl = str(tmp_dir / "%(title)s.%(ext)s")
-
-            ydl_opts: dict = {
-                "outtmpl": outtmpl,
-                "quiet": True,
-                "no_warnings": True,
-                "format": _resolve_format(quality),
-                "progress_hooks": [],  # filled below
-                "postprocessors": [],
-            }
-
-            if cookies_path:
-                ydl_opts["cookiefile"] = cookies_path
-
-            # Add audio extraction postprocessor for audio-only quality hints.
-            if _is_audio_quality(quality):
-                ydl_opts["postprocessors"].append(
-                    {
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": _audio_codec(quality),
-                        "preferredquality": "0",
-                    }
-                )
-
-            # ------------------------------------------------------------------
-            # Progress hook (called from the yt-dlp download thread)
-            # ------------------------------------------------------------------
-            def _progress_hook(info: dict) -> None:
-                if info.get("status") != "downloading":
-                    return
-                percent = parse_percent(info)
-                speed = parse_speed(info)
-                eta_sec = parse_eta(info)
-                asyncio.run_coroutine_threadsafe(
-                    progress.report_progress(
-                        job.job_id,
-                        percent,
-                        phase="downloading",
-                        speed=speed,
-                        eta_sec=eta_sec,
-                    ),
-                    loop,
-                )
-
-            ydl_opts["progress_hooks"].append(_progress_hook)
-
-            # ------------------------------------------------------------------
-            # Download (blocking — run in executor thread)
-            # ------------------------------------------------------------------
-            logger.info(
-                {
-                    "event": "youtube.download_start",
-                    "job_id": job.job_id,
-                    "quality": quality,
-                }
-            )
-            await asyncio.to_thread(_do_yt_download, job.url, ydl_opts)
-
-            # ------------------------------------------------------------------
-            # Find the downloaded file
-            # ------------------------------------------------------------------
-            # yt-dlp may produce the final file plus transient fragments/parts.
-            # Prefer the most-recently-modified file with a recognised media
-            # extension; fall back to the largest file if nothing matches.
-            _MEDIA_EXTS = {
-                ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".webm",
-                ".mp4", ".mkv", ".avi", ".mov",
-            }
-            files = [p for p in tmp_dir.iterdir() if p.is_file()]
-            if not files:
-                raise RuntimeError("yt-dlp produced no output file")
-            media_files = [p for p in files if p.suffix.lower() in _MEDIA_EXTS]
-            candidates = media_files or files
-            local_path = max(candidates, key=lambda p: p.stat().st_mtime)
-            ext = local_path.suffix.lstrip(".")
-
-            # ------------------------------------------------------------------
-            # Derive S2 key
-            # ------------------------------------------------------------------
-            stem = safe_filename(local_path.stem)
-            s2_filename = f"{stem}.{ext}" if ext else stem
-            s2_key = make_media_key(job.job_id, s2_filename)
-
-            # ------------------------------------------------------------------
-            # Upload
-            # ------------------------------------------------------------------
-            logger.info(
-                {
-                    "event": "youtube.upload_start",
-                    "job_id": job.job_id,
-                    "key": s2_key,
-                    "size": local_path.stat().st_size,
-                }
-            )
-            await progress.report_progress(job.job_id, 100, phase="uploading")
-
-            ref: S2ObjectRef = await asyncio.to_thread(s2.upload_file, local_path, s2_key)
-            logger.info(
-                {
-                    "event": "youtube.upload_done",
-                    "job_id": job.job_id,
-                    "key": s2_key,
-                    "sha256": ref.sha256,
-                }
-            )
-            return [ref]
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _do_yt_download(url: str, ydl_opts: dict) -> None:
-    """Blocking yt-dlp download — intended to be called via ``asyncio.to_thread``."""
-    try:
-        import yt_dlp  # noqa: PLC0415
-    except ImportError as exc:
-        raise RuntimeError("yt-dlp is not installed; add yt-dlp to requirements") from exc
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+    raise RuntimeError(
+        "yt-dlp executable not found. Install it with: pip install yt-dlp "
+        "or set KHAREJ_YTDLP_PATH to the binary path."
+    )
 
 
 def _resolve_format(quality: str) -> str:
@@ -264,3 +98,169 @@ def _audio_codec(quality: str) -> str:
     """Return the FFmpeg audio codec for *quality*."""
     _CODEC = {"mp3": "mp3", "m4a": "m4a", "flac": "flac", "ogg": "vorbis", "opus": "opus"}
     return _CODEC.get(quality.lower(), "mp3")
+
+
+def _build_command(
+    ytdlp_bin: str,
+    url: str,
+    outtmpl: str,
+    quality: str,
+    cookies_path: str | None,
+) -> list[str]:
+    """Build the yt-dlp CLI command list."""
+    fmt = _resolve_format(quality)
+    cmd = [
+        ytdlp_bin,
+        "--format", fmt,
+        "--output", outtmpl,
+        "--no-playlist",
+        "--progress",
+        "--newline",
+        "--no-warnings",
+    ]
+    if cookies_path and Path(cookies_path).is_file():
+        cmd += ["--cookies", cookies_path]
+        logger.info({"event": "youtube.cookies_applied", "path": cookies_path})
+    elif cookies_path:
+        logger.warning({
+            "event": "youtube.cookies_missing",
+            "path": cookies_path,
+            "msg": "cookies file not found, proceeding without cookies",
+        })
+
+    if _is_audio_quality(quality):
+        cmd += [
+            "--extract-audio",
+            "--audio-format", _audio_codec(quality),
+            "--audio-quality", "0",
+        ]
+
+    cmd.append(url)
+    return cmd
+
+
+def _run_ytdlp_subprocess(
+    cmd: list[str],
+    job_id: str,
+    loop: asyncio.AbstractEventLoop,
+    progress_coro_factory,
+) -> None:
+    """Run yt-dlp as a subprocess, parse progress lines, call progress_coro_factory."""
+    logger.debug({"event": "youtube.subprocess_cmd", "cmd": cmd})
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    output_lines: list[str] = []
+    assert process.stdout is not None
+    for line in process.stdout:
+        line = line.rstrip()
+        if line:
+            output_lines.append(line)
+            logger.debug({"event": "youtube.ytdlp_output", "line": line})
+
+        m = _PERCENT_RE.search(line)
+        if m:
+            percent = min(100, int(float(m.group(1))))
+            speed_m = _SPEED_RE.search(line)
+            speed = speed_m.group(1) if speed_m else None
+            asyncio.run_coroutine_threadsafe(
+                progress_coro_factory(percent, speed),
+                loop,
+            )
+
+    process.wait()
+    if process.returncode != 0:
+        stderr_tail = "\n".join(output_lines[-20:])
+        raise RuntimeError(
+            f"yt-dlp exited with code {process.returncode}:\n{stderr_tail}"
+        )
+
+
+class YoutubeDownloader:
+    """Download a single YouTube video/audio track and upload it to Arvan S2."""
+
+    platform: ClassVar[str] = "youtube"
+
+    async def run(
+        self,
+        job: "Job",
+        *,
+        s2: "S2Client",
+        progress: "ProgressReporter",
+        settings: "KharejSettings",
+    ) -> list[S2ObjectRef]:
+        loop = asyncio.get_running_loop()
+
+        quality: str = job.quality or settings.get("default_audio_quality") or "mp3"
+
+        # Resolve cookies path — check settings first, then env var fallback
+        cookies_path: str | None = (
+            settings.get("cookies_path")
+            or os.environ.get("KHAREJ_COOKIES_PATH")
+        )
+
+        ytdlp_bin = _find_ytdlp(settings)
+
+        with tempfile.TemporaryDirectory(prefix=f"kharej_yt_{job.job_id}_") as tmp_str:
+            tmp_dir = Path(tmp_str)
+            outtmpl = str(tmp_dir / "%(title)s.%(ext)s")
+
+            cmd = _build_command(ytdlp_bin, job.url, outtmpl, quality, cookies_path)
+
+            logger.info({
+                "event": "youtube.download_start",
+                "job_id": job.job_id,
+                "quality": quality,
+                "cookies": bool(cookies_path),
+            })
+
+            async def _make_progress(percent: int, speed: str | None) -> None:
+                await progress.report_progress(
+                    job.job_id, percent, phase="downloading", speed=speed
+                )
+
+            await asyncio.to_thread(
+                _run_ytdlp_subprocess,
+                cmd,
+                job.job_id,
+                loop,
+                _make_progress,
+            )
+
+            # Find the downloaded file — prefer most-recently-modified media file
+            _MEDIA_EXTS = {
+                ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".webm",
+                ".mp4", ".mkv", ".avi", ".mov",
+            }
+            files = [p for p in tmp_dir.iterdir() if p.is_file()]
+            if not files:
+                raise RuntimeError("yt-dlp produced no output file")
+            media_files = [p for p in files if p.suffix.lower() in _MEDIA_EXTS]
+            candidates = media_files or files
+            local_path = max(candidates, key=lambda p: p.stat().st_mtime)
+            ext = local_path.suffix.lstrip(".")
+
+            stem = safe_filename(local_path.stem)
+            s2_filename = f"{stem}.{ext}" if ext else stem
+            s2_key = make_media_key(job.job_id, s2_filename)
+
+            logger.info({
+                "event": "youtube.upload_start",
+                "job_id": job.job_id,
+                "key": s2_key,
+                "size": local_path.stat().st_size,
+            })
+            await progress.report_progress(job.job_id, 100, phase="uploading")
+
+            ref: S2ObjectRef = await asyncio.to_thread(s2.upload_file, local_path, s2_key)
+            logger.info({
+                "event": "youtube.upload_done",
+                "job_id": job.job_id,
+                "key": s2_key,
+            })
+            return [ref]
