@@ -317,7 +317,6 @@ class BatchDownloader:
                 phase="uploading",
                 done_tracks=done_count,
                 total_tracks=total_tracks or 1,
-                total_parts=len(zip_parts),
             )
 
             refs: list[S2ObjectRef] = []
@@ -345,8 +344,6 @@ class BatchDownloader:
                     phase="uploading",
                     done_tracks=done_count,
                     total_tracks=total_tracks or 1,
-                    part=idx,
-                    total_parts=len(zip_parts),
                 )
 
             logger.info(
