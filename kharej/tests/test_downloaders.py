@@ -452,14 +452,34 @@ def _make_spotify_module(*, audio_file: Path) -> MagicMock:
             "cover_url": None,
         }
     )
-
-    async def _fake_download_track(info, output_dir, ytdlp_bin):
-        dest = Path(output_dir) / "Rick_Astley_-_Never_Gonna_Give_You_Up.mp3"
-        dest.write_bytes(b"\xff\xfb" * 128)
-        return dest
-
-    mod.download_track = _fake_download_track
     return mod
+
+
+def _make_fake_yt_dlp(audio_file: Path | None = None) -> MagicMock:
+    """Build a MagicMock for yt_dlp that writes a fake mp3 to the outtmpl directory."""
+
+    class _FakeYDL:
+        def __init__(self, opts: dict) -> None:
+            self._opts = opts
+
+        def __enter__(self) -> "_FakeYDL":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def download(self, queries: list) -> None:
+            outtmpl = self._opts.get("outtmpl", "")
+            out_dir = Path(outtmpl).parent
+            if audio_file is not None:
+                import shutil  # noqa: PLC0415
+                shutil.copy(audio_file, out_dir / audio_file.name)
+            else:
+                (out_dir / "track.mp3").write_bytes(b"\xff\xfb" * 128)
+
+    fake = MagicMock()
+    fake.YoutubeDL = _FakeYDL
+    return fake
 
 
 @pytest.mark.asyncio
@@ -472,12 +492,13 @@ async def test_spotify_downloader_uploads_and_returns_ref() -> None:
         audio_file.write_bytes(b"\xff\xfb" * 128)
 
         fake_mod = _make_spotify_module(audio_file=audio_file)
+        fake_yt_dlp = _make_fake_yt_dlp(audio_file=audio_file)
         job = _make_job(platform="spotify", url="https://open.spotify.com/track/3n3Ppam7vgaVa1iaRUIOKE")
         s2 = _make_s2(_DUMMY_REF)
         progress = _make_progress()
         settings = _make_settings()
 
-        with patch.dict("sys.modules", {"spotify_dl": fake_mod}):
+        with patch.dict("sys.modules", {"spotify_dl": fake_mod, "yt_dlp": fake_yt_dlp}):
             downloader = SpotifyDownloader()
             refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
@@ -504,12 +525,7 @@ async def test_spotify_downloader_uploads_thumbnail() -> None:
         }
     )
 
-    async def _fake_download_track(info, output_dir, ytdlp_bin):
-        dest = Path(output_dir) / "track.mp3"
-        dest.write_bytes(b"\xff\xfb" * 64)
-        return dest
-
-    fake_mod.download_track = _fake_download_track
+    fake_yt_dlp = _make_fake_yt_dlp()
 
     thumb_ref = S2ObjectRef(
         key=f"thumbs/{_JOB_ID}.jpg",
@@ -536,7 +552,7 @@ async def test_spotify_downloader_uploads_thumbnail() -> None:
         Path(dest).write_bytes(b"\xff\xd8\xff" * 50)
         return dest, {}
 
-    with patch.dict("sys.modules", {"spotify_dl": fake_mod}):
+    with patch.dict("sys.modules", {"spotify_dl": fake_mod, "yt_dlp": fake_yt_dlp}):
         with patch("urllib.request.urlretrieve", side_effect=_fake_urlretrieve):
             downloader = SpotifyDownloader()
             refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
@@ -581,12 +597,7 @@ async def test_spotify_downloader_thumbnail_failure_does_not_abort() -> None:
         }
     )
 
-    async def _fake_download_track(info, output_dir, ytdlp_bin):
-        dest = Path(output_dir) / "track.mp3"
-        dest.write_bytes(b"\x00" * 64)
-        return dest
-
-    fake_mod.download_track = _fake_download_track
+    fake_yt_dlp = _make_fake_yt_dlp()
 
     s2 = _make_s2(_DUMMY_REF)
     progress = _make_progress()
@@ -597,7 +608,7 @@ async def test_spotify_downloader_thumbnail_failure_does_not_abort() -> None:
     def _bad_retrieve(url, dest):
         raise OSError("network error")
 
-    with patch.dict("sys.modules", {"spotify_dl": fake_mod}):
+    with patch.dict("sys.modules", {"spotify_dl": fake_mod, "yt_dlp": fake_yt_dlp}):
         with patch("urllib.request.urlretrieve", side_effect=_bad_retrieve):
             downloader = SpotifyDownloader()
             refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
@@ -688,3 +699,111 @@ async def test_dispatcher_registers_youtube_and_spotify() -> None:
         assert dispatcher.has("youtube"), "youtube downloader must be registered by default"
         assert dispatcher.has("spotify"), "spotify downloader must be registered by default"
         assert dispatcher.has("stub"), "stub downloader must still be registered"
+
+
+# ===========================================================================
+# SpotifyDownloader – playlist / album collection support
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_spotify_downloader_playlist_expands_tracks() -> None:
+    """SpotifyDownloader.run should download each track in a playlist."""
+    from kharej.downloaders.spotify import SpotifyDownloader
+
+    playlist_tracks = [
+        {"title": "Track One", "artists": ["Artist A"]},
+        {"title": "Track Two", "artists": ["Artist B"]},
+    ]
+
+    fake_mod = MagicMock()
+    fake_mod.get_playlist_tracks = MagicMock(return_value=playlist_tracks)
+    fake_yt_dlp = _make_fake_yt_dlp()
+
+    refs_returned = [
+        S2ObjectRef(key=f"media/{_JOB_ID}/0000_Artist_A_-_Track_One.mp3", size=100, mime="audio/mpeg", sha256="a" * 64),
+        S2ObjectRef(key=f"media/{_JOB_ID}/0001_Artist_B_-_Track_Two.mp3", size=100, mime="audio/mpeg", sha256="b" * 64),
+    ]
+    s2 = MagicMock()
+    s2.upload_file = MagicMock(side_effect=refs_returned)
+    progress = _make_progress()
+    settings = _make_settings()
+    job = _make_job(
+        platform="spotify",
+        url="https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+    )
+
+    with patch.dict("sys.modules", {"spotify_dl": fake_mod, "yt_dlp": fake_yt_dlp}):
+        downloader = SpotifyDownloader()
+        result = await downloader.run(job, s2=s2, progress=progress, settings=settings)
+
+    assert len(result) == 2
+    fake_mod.get_playlist_tracks.assert_called_once_with(job.url)
+
+
+@pytest.mark.asyncio
+async def test_spotify_downloader_album_expands_tracks() -> None:
+    """SpotifyDownloader.run should download each track in an album."""
+    from kharej.downloaders.spotify import SpotifyDownloader
+
+    album_tracks = [
+        {"title": "Song A", "artists": ["Band"]},
+        {"title": "Song B", "artists": ["Band"]},
+        {"title": "Song C", "artists": ["Band"]},
+    ]
+
+    fake_mod = MagicMock()
+    # No get_playlist_tracks — use get_album_tracks
+    del fake_mod.get_playlist_tracks
+    fake_mod.get_album_tracks = MagicMock(return_value=album_tracks)
+    fake_yt_dlp = _make_fake_yt_dlp()
+
+    dummy_ref = S2ObjectRef(key=f"media/{_JOB_ID}/x.mp3", size=100, mime="audio/mpeg", sha256="c" * 64)
+    s2 = MagicMock()
+    s2.upload_file = MagicMock(return_value=dummy_ref)
+    progress = _make_progress()
+    settings = _make_settings()
+    job = _make_job(
+        platform="spotify",
+        url="https://open.spotify.com/album/6dVIqQ8qmQ5GBnJ9shOYGE",
+    )
+
+    with patch.dict("sys.modules", {"spotify_dl": fake_mod, "yt_dlp": fake_yt_dlp}):
+        downloader = SpotifyDownloader()
+        result = await downloader.run(job, s2=s2, progress=progress, settings=settings)
+
+    assert len(result) == 3
+    fake_mod.get_album_tracks.assert_called_once_with(job.url)
+
+
+@pytest.mark.asyncio
+async def test_spotify_downloader_collection_fallback_when_no_getter() -> None:
+    """SpotifyDownloader.run should fall back to single-track when collection getters are absent."""
+    from kharej.downloaders.spotify import SpotifyDownloader
+
+    fake_mod = MagicMock()
+    # No collection getters available
+    fake_mod.get_playlist_tracks = None
+    fake_mod.get_album_tracks = None
+    fake_mod.list_collection_tracks = None
+    fake_mod.parse_spotify_track_id = MagicMock(return_value="trackxyz")
+    fake_mod.get_track_info = MagicMock(
+        return_value={"title": "Solo Track", "artists": ["Solo Artist"], "cover_url": None}
+    )
+    fake_yt_dlp = _make_fake_yt_dlp()
+
+    s2 = _make_s2(_DUMMY_REF)
+    progress = _make_progress()
+    settings = _make_settings()
+    job = _make_job(
+        platform="spotify",
+        url="https://open.spotify.com/playlist/abc",
+    )
+
+    with patch.dict("sys.modules", {"spotify_dl": fake_mod, "yt_dlp": fake_yt_dlp}):
+        downloader = SpotifyDownloader()
+        result = await downloader.run(job, s2=s2, progress=progress, settings=settings)
+
+    # Should fall back to single track download
+    assert len(result) >= 1
+    fake_mod.parse_spotify_track_id.assert_called_once()
