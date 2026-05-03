@@ -176,56 +176,69 @@ class BatchDownloader:
                 nonlocal done_count, fail_count
 
                 async with semaphore:
-                    # Build a per-track Job with the same job_id but the
-                    # individual track URL.  We reuse the same job_id so
-                    # progress events are attributed to the parent job.
-                    from kharej.dispatcher import Job as _Job  # noqa: PLC0415
+                    if job.platform == "spotify":
+                        # Spotify: download locally so the ZIP contains real audio.
+                        try:
+                            import spotify_dl as _spodl  # noqa: PLC0415
+                            from kharej.downloaders.spotify import _download_spotify_track_locally  # noqa: PLC0415
 
-                    track_job = _Job(
-                        job_id=job.job_id,
-                        user_id=job.user_id,
-                        platform=job.platform,
-                        url=track_url,
-                        quality=job.quality,
-                        job_type="single",
-                        payload=job.payload,
-                    )
-                    try:
-                        refs = await track_downloader.run(
-                            track_job,
-                            s2=s2,
-                            progress=_NoopProgress(),
-                            settings=settings,
+                            track_id = track_url.rstrip("/").split("/")[-1]
+                            info = await asyncio.to_thread(_spodl.get_track_info, track_id)
+                            _title = info.get("title") or "Unknown"
+                            _artist = (info.get("artists") or [""])[0]
+                            audio_path = await _download_spotify_track_locally(
+                                _title, _artist, job.quality or "mp3", tmp_dir, info
+                            )
+                            downloaded_files.append(audio_path)
+                            done_count += 1
+                        except Exception as exc:
+                            logger.warning(
+                                {
+                                    "event": "batch.track_failed",
+                                    "job_id": job.job_id,
+                                    "track_url": track_url,
+                                    "error": repr(exc),
+                                }
+                            )
+                            fail_count += 1
+                            return None
+                    else:
+                        # Non-Spotify: keep existing behaviour.
+                        from kharej.dispatcher import Job as _Job  # noqa: PLC0415
+
+                        track_job = _Job(
+                            job_id=job.job_id,
+                            user_id=job.user_id,
+                            platform=job.platform,
+                            url=track_url,
+                            quality=job.quality,
+                            job_type="single",
+                            payload=job.payload,
                         )
-                        # The per-track downloader already uploaded to S2.
-                        # We also want to keep a local copy for zipping.
-                        # Since the per-track downloader uses a temp dir we can't
-                        # recover its temp file; instead we download from S2 or
-                        # write a placeholder.  For the zip we write a stub file
-                        # whose name matches the S2 key's basename.
-                        for ref in refs:
-                            local_name = Path(ref.key).name
-                            local_path = tmp_dir / local_name
-                            # Write the s2 key as content (placeholder for zip).
-                            # In a full implementation you would stream from S2
-                            # or keep the temp file alive across the boundary.
-                            # TODO: replace with real audio content when per-track
-                            # downloaders can return a local file path alongside
-                            # the S2 ref.
-                            local_path.write_text(ref.key)
-                            downloaded_files.append(local_path)
-                        done_count += 1
-                    except Exception as exc:
-                        logger.warning(
-                            {
-                                "event": "batch.track_failed",
-                                "job_id": job.job_id,
-                                "track_url": track_url,
-                                "error": repr(exc),
-                            }
-                        )
-                        fail_count += 1
-                        return None
+                        try:
+                            refs = await track_downloader.run(
+                                track_job,
+                                s2=s2,
+                                progress=_NoopProgress(),
+                                settings=settings,
+                            )
+                            for ref in refs:
+                                local_name = Path(ref.key).name
+                                local_path = tmp_dir / local_name
+                                local_path.write_text(ref.key)
+                                downloaded_files.append(local_path)
+                            done_count += 1
+                        except Exception as exc:
+                            logger.warning(
+                                {
+                                    "event": "batch.track_failed",
+                                    "job_id": job.job_id,
+                                    "track_url": track_url,
+                                    "error": repr(exc),
+                                }
+                            )
+                            fail_count += 1
+                            return None
 
                 percent = int(done_count * 100 / total_tracks) if total_tracks else 100
                 await progress.report_progress(

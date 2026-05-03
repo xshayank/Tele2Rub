@@ -41,6 +41,76 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kharej.downloaders.spotify")
 
 
+async def _download_spotify_track_locally(
+    title: str,
+    artist: str,
+    quality: str,
+    tmp_dir: "Path",
+    info: dict,
+    ytdlp_bin: str = "yt-dlp",
+) -> "Path":
+    """Download a Spotify track locally without uploading to S2.
+
+    MP3 quality  → YouTube search via yt-dlp.
+    Other quality → musicdl search; falls back to existing waterfall.
+    Returns the local Path of the downloaded audio file.
+    """
+    if quality == "mp3":
+        try:
+            import yt_dlp as _yt_dlp  # noqa: PLC0415
+
+            query = f"ytsearch1:{artist} - {title}" if artist else f"ytsearch1:{title}"
+            ydl_opts = {
+                "format": "bestaudio/best",
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "320",
+                    }
+                ],
+                "outtmpl": str(tmp_dir / "%(title)s.%(ext)s"),
+                "noplaylist": True,
+                "quiet": True,
+            }
+
+            def _run_ytdlp() -> None:
+                with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([query])
+
+            await asyncio.to_thread(_run_ytdlp)
+            audio_path = next(tmp_dir.glob("*.mp3"), None)
+            if audio_path is not None:
+                return audio_path
+            logger.warning({"event": "spotify.ytdlp_no_mp3", "query": query})
+        except Exception as exc:
+            logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
+        # Fallback to existing waterfall
+    else:
+        try:
+            from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
+
+            client = MusicdlClient()
+            query = f"{artist} - {title}" if artist else title
+            await asyncio.to_thread(client.download, query, str(tmp_dir))
+            for ext in ("*.flac", "*.mp3", "*.m4a", "*.opus", "*.ogg"):
+                audio_path = next(tmp_dir.glob(ext), None)
+                if audio_path is not None:
+                    return audio_path
+            logger.warning({"event": "spotify.musicdl_no_file", "query": query})
+        except Exception as exc:
+            logger.warning({"event": "spotify.musicdl_failed", "error": repr(exc)})
+        # Fallback to existing waterfall
+
+    # Waterfall fallback (existing behaviour)
+    try:
+        import spotify_dl as _spodl  # noqa: PLC0415
+        return await _spodl.download_track(info, tmp_dir, ytdlp_bin)
+    except Exception as exc:
+        logger.warning({"event": "spotify.waterfall_failed", "error": repr(exc)})
+        raise
+
+
 class SpotifyDownloader:
     """Download a single Spotify track and upload it (+ thumbnail) to Arvan S2."""
 
@@ -102,7 +172,10 @@ class SpotifyDownloader:
             tmp_dir = Path(tmp_str)
 
             logger.info({"event": "spotify.download_start", "job_id": job.job_id})
-            audio_path: Path = await _spodl.download_track(info, tmp_dir, ytdlp_bin)
+            artist: str = artists[0] if artists else ""
+            audio_path: Path = await _download_spotify_track_locally(
+                title, artist, job.quality or "mp3", tmp_dir, info, ytdlp_bin
+            )
 
             await progress.report_progress(job.job_id, 90, phase="uploading")
 
