@@ -76,11 +76,11 @@ def _find_ytdlp(settings: "KharejSettings") -> str:
 
 _YOUTUBE_FORMATS: dict[str, str] = {
     "mp3": "bestaudio/best",
-    "mp4": "bestvideo+bestaudio/best",
-    "mp4-1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio/bestvideo[height<=1080]+bestaudio/best",
-    "mp4-720p": "bestvideo[height<=720][ext=mp4]+bestaudio/bestvideo[height<=720]+bestaudio/best",
-    "mp4-480p": "bestvideo[height<=480][ext=mp4]+bestaudio/bestvideo[height<=480]+bestaudio/best",
-    "mp4-360p": "bestvideo[height<=360][ext=mp4]+bestaudio/bestvideo[height<=360]+bestaudio/best",
+    "mp4": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+    "mp4-1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+    "mp4-720p": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]",
+    "mp4-480p": "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]",
+    "mp4-360p": "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]",
 }
 
 _VALID_QUALITIES: frozenset[str] = frozenset(_YOUTUBE_FORMATS)
@@ -134,6 +134,8 @@ def _build_command(
             "--audio-format", _AUDIO_FORMAT,
             "--audio-quality", "0",
         ]
+    else:
+        cmd += ["--merge-output-format", "mp4", "--remux-video", "mp4"]
 
     cmd.append(url)
     return cmd
@@ -276,7 +278,7 @@ class YoutubeDownloader:
 
             # Find the downloaded file — prefer most-recently-modified media file
             _MEDIA_EXTS = {
-                ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".webm",
+                ".mp3", ".m4a", ".flac", ".ogg", ".opus",
                 ".mp4", ".mkv", ".avi", ".mov",
             }
             files = [p for p in tmp_dir.iterdir() if p.is_file()]
