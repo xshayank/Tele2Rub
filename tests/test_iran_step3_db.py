@@ -117,6 +117,23 @@ class TestEngineImports:
         sl = eng_mod.AsyncSessionLocal
         assert sl is not None
 
+    def test_engine_module_valid_utf8(self):
+        """iran/db/engine.py must be decodable as UTF-8 with no stray bytes.
+
+        Regression guard: a Windows-1252 en-dash (0x97) was accidentally
+        introduced in the run_migrations docstring, causing a SyntaxError
+        at import time under Python 3.12.
+        """
+        import py_compile
+        from pathlib import Path
+
+        engine_path = Path(_REPO_ROOT) / "iran" / "db" / "engine.py"
+        raw = engine_path.read_bytes()
+        # Raises UnicodeDecodeError if the file is not valid UTF-8
+        raw.decode("utf-8")
+        # Raises PyCompileError / SyntaxError if Python cannot parse it
+        py_compile.compile(str(engine_path), doraise=True)
+
 
 # ---------------------------------------------------------------------------
 # 2b. Alembic config — script_location resolves to an existing directory
