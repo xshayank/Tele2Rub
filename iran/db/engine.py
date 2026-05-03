@@ -141,7 +141,7 @@ async def run_migrations() -> None:
     import functools
 
     try:
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             None, functools.partial(command.upgrade, alembic_cfg, "head")
         )
     except Exception as exc:
