@@ -94,13 +94,26 @@ def __getattr__(name: str) -> object:
 # ---------------------------------------------------------------------------
 
 
+def _make_sync_url(async_url: str) -> str:
+    """Strip async driver prefix so Alembic (sync) can use the URL."""
+    replacements = [
+        ("sqlite+aiosqlite://", "sqlite://"),
+        ("postgresql+asyncpg://", "postgresql://"),
+        ("mysql+aiomysql://", "mysql://"),
+    ]
+    for async_prefix, sync_prefix in replacements:
+        if async_url.startswith(async_prefix):
+            return sync_prefix + async_url[len(async_prefix):]
+    return async_url
+
+
 async def run_migrations() -> None:
     """Run ``alembic upgrade head`` programmatically against the live database.
 
     Safe to call on every startup - Alembic is idempotent and skips
     revisions that have already been applied.  When ``DATABASE_URL`` is
     empty (e.g. during unit tests that supply their own engine) this
-    function is a no-op.
+    function creates all tables on the in-memory fallback engine.
 
     Set the environment variable ``IRAN_RUN_MIGRATIONS=0`` to skip
     migrations entirely (useful in development / CI when no live database
@@ -122,10 +135,22 @@ async def run_migrations() -> None:
         run_flag = os.environ.get("IRAN_RUN_MIGRATIONS", "1").strip() not in ("0", "false", "no")
 
     if not run_flag:
-        return  # explicitly disabled via IRAN_RUN_MIGRATIONS=0
+        # Migrations disabled — ensure tables exist via create_all (idempotent)
+        from iran.db.models import Base
+
+        engine = _build_engine(url)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        return
 
     if not url:
-        return  # no-op in tests / when DB is not configured
+        # No DATABASE_URL — create tables on the in-memory fallback engine
+        from iran.db.models import Base
+
+        engine = _get_engine()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        return
 
     import pathlib
 
@@ -134,7 +159,8 @@ async def run_migrations() -> None:
 
     alembic_ini = pathlib.Path(__file__).parent / "alembic.ini"
     alembic_cfg = AlembicConfig(str(alembic_ini))
-    alembic_cfg.set_main_option("sqlalchemy.url", url)
+    sync_url = _make_sync_url(url)
+    alembic_cfg.set_main_option("sqlalchemy.url", sync_url)
 
     # Run in a thread pool to avoid blocking the event loop
     import asyncio

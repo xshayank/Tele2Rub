@@ -166,3 +166,27 @@ class TestStartupSystemExitHandling:
             with pytest.raises(RuntimeError, match="SystemExit"):
                 with TestClient(app, raise_server_exceptions=True):
                     pass
+
+
+# ---------------------------------------------------------------------------
+# Register endpoint works without DATABASE_URL (in-memory SQLite fallback)
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterWithoutDatabaseUrl:
+    def test_register_endpoint_works_without_database_url(self):
+        """POST /auth/register must return 201 even with no DATABASE_URL (in-memory SQLite fallback)."""
+        from starlette.testclient import TestClient
+
+        from iran.config import IranSettings
+        from iran.main import create_app
+
+        settings = IranSettings(DATABASE_URL="", RUN_MIGRATIONS=False)
+        app = create_app(settings)
+        with TestClient(app) as client:
+            resp = client.post("/auth/register", json={
+                "email": "test@example.com",
+                "display_name": "Test User",
+                "password": "password123",
+            })
+            assert resp.status_code == 201, f"Expected 201, got {resp.status_code}: {resp.text}"
