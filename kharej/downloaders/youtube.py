@@ -198,11 +198,26 @@ class YoutubeDownloader:
 
         quality: str = job.quality or settings.get("default_audio_quality") or "mp3"
 
-        # Resolve cookies path — check settings first, then env var fallback
+        # Resolve cookies path — check settings first, then env var fallback,
+        # then auto-discover cookies.txt in kharej/ and repo root.
         cookies_path: str | None = (
             settings.get("cookies_path")
             or os.environ.get("KHAREJ_COOKIES_PATH")
         )
+        if not cookies_path:
+            _kharej_dir = Path(__file__).parent.parent   # kharej/
+            _repo_root = _kharej_dir.parent              # repo root
+            for _candidate in [
+                _kharej_dir / "cookies.txt",
+                _repo_root / "cookies.txt",
+            ]:
+                if _candidate.is_file():
+                    cookies_path = str(_candidate)
+                    logger.info({
+                        "event": "youtube.cookies_autodiscovered",
+                        "path": cookies_path,
+                    })
+                    break
 
         ytdlp_bin = _find_ytdlp(settings)
 

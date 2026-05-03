@@ -372,6 +372,43 @@ async def test_youtube_downloader_uses_cookies(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_youtube_downloader_autodiscovers_cookies(tmp_path: Path, monkeypatch) -> None:
+    """When no cookies_path is configured, a cookies.txt in kharej/ or repo root is used."""
+    job = _make_job(quality="mp3")
+    s2 = _make_s2(_DUMMY_REF)
+    progress = _make_progress()
+    settings = _make_settings()  # no cookies_path
+
+    # Place a cookies.txt where the auto-discovery logic will find it
+    cookies_file = tmp_path / "cookies.txt"
+    cookies_file.write_text("# Netscape HTTP Cookie File\n")
+
+    captured_cmds: list[list[str]] = []
+
+    def _fake_subprocess(cmd, _job_id, _loop, _progress_coro_factory):
+        captured_cmds.append(list(cmd))
+        idx = cmd.index("--output")
+        out_dir = Path(cmd[idx + 1]).parent
+        (out_dir / "track.mp3").write_bytes(b"\x00" * 64)
+
+    # Patch __file__ so that Path(__file__).parent.parent resolves to tmp_path
+    # (i.e. the "kharej/" dir), where cookies.txt was created above.
+    # Structure: tmp_path/downloaders/youtube.py → parent.parent == tmp_path
+    import kharej.downloaders.youtube as yt_mod
+    monkeypatch.setattr(yt_mod, "__file__", str(tmp_path / "downloaders" / "youtube.py"))
+
+    with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
+         patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
+        downloader = YoutubeDownloader()
+        await downloader.run(job, s2=s2, progress=progress, settings=settings)
+
+    assert captured_cmds
+    assert "--cookies" in captured_cmds[0]
+    cookies_idx = captured_cmds[0].index("--cookies")
+    assert captured_cmds[0][cookies_idx + 1] == str(cookies_file)
+
+
+@pytest.mark.asyncio
 async def test_youtube_downloader_s2_key_uses_safe_filename() -> None:
     """S2 key should use a sanitized version of the downloaded filename."""
     job = _make_job(quality="mp3")
