@@ -143,7 +143,7 @@ class TestBatchDownloaderEmptyTrackIds:
             with patch("kharej.downloaders.batch._split_zip_from_files", None):
                 return await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
-        result = asyncio.get_event_loop().run_until_complete(run())
+        result = asyncio.run(run())
 
         # The downloader should have been called exactly once with the playlist URL
         assert called_with == [job_url], (
@@ -185,7 +185,7 @@ class TestBatchDownloaderEmptyTrackIds:
             with patch("kharej.downloaders.batch._split_zip_from_files", None):
                 return await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
         assert called_with == [job_url]
 
@@ -224,7 +224,7 @@ class TestBatchDownloaderEmptyTrackIds:
             with patch("kharej.downloaders.batch._split_zip_from_files", None):
                 return await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
 
         # The track_id is a bare YouTube ID → should be converted to a youtu.be URL
         expected_url = f"https://youtu.be/{track_id}"
