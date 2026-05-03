@@ -106,7 +106,7 @@
       html += '<div class="download-card">';
       html += '<div><div class="filename">' + filename + '</div>';
       html += '<div class="meta">' + size + (mime ? ' · ' + mime : '') + '</div></div>';
-      html += '<a href="/jobs/' + JOB_ID + '/download?part=' + i + '" class="btn btn-primary" target="_blank">دانلود</a>';
+      html += '<button class="btn btn-primary" onclick="doDownload(\'' + JOB_ID + '\',' + i + ')">⬇ دانلود / پخش</button>';
       html += '</div>';
     });
     downloadList.innerHTML = html;
@@ -193,6 +193,21 @@
       } catch (_) {}
     };
     es.onerror = function() { es.close(); };
+  }
+
+  async function doDownload(jobId, part) {
+    try {
+      var r = await window.authFetch('/jobs/' + jobId + '/download?part=' + part + '&url=1');
+      if (!r) return;
+      if (r.ok) {
+        var data = await r.json();
+        if (data.url) {
+          window.open(data.url, '_blank');
+        }
+      }
+    } catch(e) {
+      console.error('Download failed', e);
+    }
   }
 
   cancelBtn.addEventListener('click', async function() {
