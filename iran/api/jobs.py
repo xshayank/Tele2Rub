@@ -583,6 +583,7 @@ async def download_job(
     job_id: str,
     request: Request,
     part: int | None = Query(default=None, ge=0),
+    url_only: bool = Query(default=False, alias="url"),
     session: AsyncSession = Depends(get_db),
     current_user: Any = Depends(get_current_user),
 ) -> Any:
@@ -590,6 +591,7 @@ async def download_job(
 
     - Without ``?part``: returns ``{"parts": [...S2ObjectRef dicts...]}``
     - With ``?part=N``: 302-redirects to a presigned S2 URL for part N.
+    - With ``?part=N&url=1``: returns ``{"url": "..."}`` instead of redirecting.
     """
     job = await session.get(Job, job_id)
     if job is None:
@@ -627,6 +629,8 @@ async def download_job(
             detail="Could not generate download URL.",
         ) from exc
 
+    if url_only:
+        return {"url": presigned_url}
     return RedirectResponse(url=presigned_url, status_code=status.HTTP_302_FOUND)
 
 
