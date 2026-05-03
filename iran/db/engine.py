@@ -101,13 +101,28 @@ async def run_migrations() -> None:
     revisions that have already been applied.  When ``DATABASE_URL`` is
     empty (e.g. during unit tests that supply their own engine) this
     function is a no-op.
+
+    Set the environment variable ``IRAN_RUN_MIGRATIONS=0`` to skip
+    migrations entirely (useful in development / CI when no live database
+    is available).  The default is to run migrations so that production
+    deployments stay up-to-date automatically.
     """
+    # Check the opt-out flag first so we fail fast without importing Alembic.
     try:
         from iran.config import get_settings
 
-        url = get_settings().DATABASE_URL
+        settings = get_settings()
+        url = settings.DATABASE_URL
+        run_flag = settings.RUN_MIGRATIONS
     except (ImportError, AttributeError, ValueError):
         url = os.environ.get("IRAN_DATABASE_URL", "")
+        # Pydantic-settings handles common boolean strings ("false", "no", "0"
+        # → False) automatically for the RUN_MIGRATIONS bool field.  Replicate
+        # the same set here for the rare fallback path (no settings available).
+        run_flag = os.environ.get("IRAN_RUN_MIGRATIONS", "1").strip() not in ("0", "false", "no")
+
+    if not run_flag:
+        return  # explicitly disabled via IRAN_RUN_MIGRATIONS=0
 
     if not url:
         return  # no-op in tests / when DB is not configured
@@ -125,9 +140,19 @@ async def run_migrations() -> None:
     import asyncio
     import functools
 
-    await asyncio.get_event_loop().run_in_executor(
-        None, functools.partial(command.upgrade, alembic_cfg, "head")
-    )
+    try:
+        await asyncio.get_event_loop().run_in_executor(
+            None, functools.partial(command.upgrade, alembic_cfg, "head")
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Database migration failed — Alembic could not run 'upgrade head'.\n"
+            f"  alembic.ini  : {alembic_ini}\n"
+            f"  migrations   : {alembic_ini.parent / 'migrations'}\n"
+            f"  database url : {url!r}\n"
+            f"To skip migrations set IRAN_RUN_MIGRATIONS=0.\n"
+            f"Original error: {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

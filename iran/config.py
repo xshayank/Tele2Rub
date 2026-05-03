@@ -66,6 +66,14 @@ class IranSettings(BaseSettings):
     IRAN_RUBIKA_ACCOUNT_GUID: str = ""
 
     # ------------------------------------------------------------------
+    # Database migrations
+    # ------------------------------------------------------------------
+    # Set IRAN_RUN_MIGRATIONS=0 to skip running Alembic on startup.
+    # Useful in development / CI when no live database is available.
+    # Defaults to True so production deployments are safe out of the box.
+    RUN_MIGRATIONS: bool = True
+
+    # ------------------------------------------------------------------
     # Job rate limiting (Step 7)
     # ------------------------------------------------------------------
     MAX_JOBS_PER_HOUR: int = 10

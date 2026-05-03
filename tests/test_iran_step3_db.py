@@ -119,6 +119,103 @@ class TestEngineImports:
 
 
 # ---------------------------------------------------------------------------
+# 2b. Alembic config — script_location resolves to an existing directory
+# ---------------------------------------------------------------------------
+
+
+class TestAlembicConfig:
+    """Verify that the Alembic configuration points at a real migrations dir.
+
+    This is a regression test for the startup crash caused by
+    ``script_location = migrations`` being resolved relative to CWD instead of
+    relative to the ``alembic.ini`` file itself.
+    The fix changes the value to ``%(here)s/migrations`` so Alembic always
+    finds ``iran/db/migrations/`` regardless of where the process is started.
+    """
+
+    def test_script_location_exists(self):
+        """Alembic config script_location must resolve to an existing directory."""
+        from pathlib import Path
+
+        from alembic.config import Config as AlembicConfig
+
+        alembic_ini = Path(_REPO_ROOT) / "iran" / "db" / "alembic.ini"
+        assert alembic_ini.exists(), f"alembic.ini not found at {alembic_ini}"
+
+        cfg = AlembicConfig(str(alembic_ini))
+        script_location = cfg.get_main_option("script_location")
+        assert script_location is not None, "script_location is not set in alembic.ini"
+
+        # Resolve relative paths from the ini file's directory (same as Alembic)
+        resolved = Path(script_location)
+        if not resolved.is_absolute():
+            resolved = alembic_ini.parent / script_location
+        resolved = resolved.resolve()
+
+        assert resolved.exists(), (
+            f"Alembic script_location '{script_location}' resolves to '{resolved}' "
+            f"which does not exist.  Check iran/db/alembic.ini."
+        )
+        assert resolved.is_dir(), (
+            f"Alembic script_location '{resolved}' exists but is not a directory."
+        )
+
+    def test_run_migrations_no_op_without_db_url(self):
+        """run_migrations() must be a no-op when DATABASE_URL is not set."""
+        import asyncio
+        import os
+
+        env_backup = os.environ.copy()
+        try:
+            # Remove any DB URL from the environment so run_migrations skips
+            for key in list(os.environ.keys()):
+                if key == "IRAN_DATABASE_URL":
+                    del os.environ[key]
+
+            # Also clear the lru_cache so settings are re-read
+            from iran.config import get_settings
+
+            get_settings.cache_clear()
+
+            from iran.db.engine import run_migrations
+
+            # Should return without raising
+            asyncio.run(run_migrations())
+        finally:
+            os.environ.clear()
+            os.environ.update(env_backup)
+            from iran.config import get_settings as _gs
+
+            _gs.cache_clear()
+
+    def test_run_migrations_no_op_when_flag_disabled(self):
+        """run_migrations() must skip when IRAN_RUN_MIGRATIONS=0 is set."""
+        import asyncio
+        import os
+
+        env_backup = os.environ.copy()
+        try:
+            os.environ["IRAN_RUN_MIGRATIONS"] = "0"
+            # Set a non-empty DATABASE_URL so the flag is the only skip path
+            os.environ["IRAN_DATABASE_URL"] = "sqlite+aiosqlite:///./test.db"
+
+            from iran.config import get_settings
+
+            get_settings.cache_clear()
+
+            from iran.db.engine import run_migrations
+
+            # Should return without raising (no Alembic call)
+            asyncio.run(run_migrations())
+        finally:
+            os.environ.clear()
+            os.environ.update(env_backup)
+            from iran.config import get_settings as _gs
+
+            _gs.cache_clear()
+
+
+# ---------------------------------------------------------------------------
 # 3. Table creation (schema smoke test)
 # ---------------------------------------------------------------------------
 

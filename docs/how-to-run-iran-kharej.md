@@ -140,6 +140,11 @@ IRAN_S2_BUCKET=rubetunes-media
 # IRAN_S2_PRESIGN_EXPIRE_SECONDS=3600   # default: 3600
 # IRAN_MAX_JOBS_PER_HOUR=10             # default: 10
 
+# ── Database migrations ───────────────────────────────────────────────────────
+# Set to 0 to skip Alembic migrations on startup (e.g. in CI or dev without a DB).
+# Default is 1 (run migrations automatically on every startup).
+# IRAN_RUN_MIGRATIONS=1
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 IRAN_LOG_LEVEL=INFO
 IRAN_LOG_FORMAT=text       # "text" (human-readable) or "json" (structured)
@@ -151,7 +156,13 @@ IRAN_LOG_FORMAT=text       # "text" (human-readable) or "json" (structured)
 >
 > Source files to cross-check: `iran/config.py`, `iran/.env.example`.
 
-### 4c. Apply database migrations (first run only)
+### 4c. Database migrations
+
+**Automatic (default):** The Iran server runs `alembic upgrade head` automatically on every startup.
+Alembic is idempotent — already-applied revisions are skipped.  The migration scripts live at
+`iran/db/migrations/` and the Alembic configuration is at `iran/db/alembic.ini`.
+
+**Manual:** If you need to apply or inspect migrations outside of a running server:
 
 ```bash
 cd /path/to/RubeTunes
@@ -159,7 +170,19 @@ source .venv/bin/activate
 export $(grep -v '^#' iran/.env | xargs)   # load env vars
 
 # Apply all Alembic migrations
-alembic --config iran/alembic.ini upgrade head
+alembic --config iran/db/alembic.ini upgrade head
+
+# Show current revision
+alembic --config iran/db/alembic.ini current
+```
+
+**Skip migrations in dev/CI:** Set `IRAN_RUN_MIGRATIONS=0` in `iran/.env` (or as an environment
+variable) to skip Alembic entirely on startup.  Useful when no live database is available, or
+during unit-test runs.  The default is `1` so production deployments are always kept up-to-date.
+
+```dotenv
+# iran/.env  — disable auto-migrations for a run without a real DB
+IRAN_RUN_MIGRATIONS=0
 ```
 
 ---
