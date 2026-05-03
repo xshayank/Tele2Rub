@@ -159,6 +159,10 @@ class ProgressReporter:
         phase: str = "downloading",
         speed: str | None = None,
         eta_sec: int | None = None,
+        done_tracks: int | None = None,
+        total_tracks: int | None = None,
+        failed_tracks: int | None = None,
+        current_track: str | None = None,
     ) -> None:
         """Convenience wrapper: create a ``JobProgress`` and call :meth:`report`."""
         from datetime import datetime, timezone
@@ -171,6 +175,10 @@ class ProgressReporter:
                 percent=percent,
                 speed=speed,
                 eta_sec=eta_sec,
+                done_tracks=done_tracks,
+                total_tracks=total_tracks,
+                failed_tracks=failed_tracks,
+                current_track=current_track,
             )
         )
 

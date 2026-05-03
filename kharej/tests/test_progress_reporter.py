@@ -280,9 +280,31 @@ async def test_complete_twice_no_error() -> None:
     assert len(sent) == 2
 
 
+
 # ---------------------------------------------------------------------------
-# Test 15: concurrent report() calls are safe
+# Test 16: report_progress accepts done_tracks / total_tracks kwargs
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_report_progress_batch_kwargs_no_raise() -> None:
+    """report_progress(done_tracks=5, total_tracks=10) must not raise TypeError."""
+    reporter, sent = _reporter(throttle_sec=0.0)
+    # Should not raise with batch kwargs
+    await reporter.report_progress(
+        _JOB_ID,
+        50,
+        phase="downloading",
+        done_tracks=5,
+        total_tracks=10,
+        failed_tracks=0,
+        current_track="Shape of You",
+    )
+    assert len(sent) == 1
+    assert sent[0].done_tracks == 5
+    assert sent[0].total_tracks == 10
+    assert sent[0].failed_tracks == 0
+    assert sent[0].current_track == "Shape of You"
 
 
 @pytest.mark.asyncio
