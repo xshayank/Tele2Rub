@@ -27,7 +27,6 @@
 {% endblock %}
 {% block scripts %}
 <script>
-const token = () => sessionStorage.getItem('rt_access_token');
 let currentPage = 1;
 let lastData = null;
 
@@ -39,7 +38,8 @@ async function loadAudit() {
   if (action) url += `&action=${encodeURIComponent(action)}`;
   if (since) url += `&since=${since}`;
   if (until) url += `&until=${until}`;
-  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token() } });
+  const r = await window.authFetch(url);
+  if (!r) return;
   if (r.status === 403) { window.location = '/login'; return; }
   lastData = await r.json();
   const tbody = document.getElementById('audit-tbody');

@@ -27,7 +27,7 @@
 {% block scripts %}
 <script>
 (function() {
-  var token = sessionStorage.getItem('rt_access_token');
+  var token = window.getToken();
   if (!token) { window.location.href = '/login'; return; }
 
   var currentPage = 1;
@@ -72,7 +72,7 @@
 
   function loadJobs() {
     var url = '/jobs?page=' + currentPage + '&per_page=' + perPage;
-    fetch(url, { headers: { 'Authorization': 'Bearer ' + token } })
+    window.authFetch(url)
       .then(function(r) {
         if (r.status === 401) { window.location.href = '/login'; return null; }
         return r.json();

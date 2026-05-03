@@ -108,7 +108,7 @@ document.getElementById('submit-form').addEventListener('submit', async function
   e.preventDefault();
   var msg = document.getElementById('msg');
   msg.innerHTML = '';
-  var token = sessionStorage.getItem('rt_access_token');
+  var token = window.getToken();
   if (!token) { window.location.href = '/login'; return; }
   var platform = document.getElementById('platform').value;
   var quality = platform === 'youtube'
@@ -120,16 +120,14 @@ document.getElementById('submit-form').addEventListener('submit', async function
     quality: quality,
     job_type: document.getElementById('job_type').value
   };
-  var resp = await fetch('/jobs', {
+  var resp = await window.authFetch('/jobs', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token},
+    headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body)
   });
   if (resp.ok) {
     var data = await resp.json();
     window.location.href = '/ui/jobs/' + data.job_id;
-  } else if (resp.status === 401) {
-    window.location.href = '/login';
   } else {
     var err = await resp.json();
     msg.innerHTML = '<div class="alert alert-error">' + (err.detail || 'خطا در ارسال درخواست') + '</div>';
