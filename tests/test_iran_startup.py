@@ -147,3 +147,22 @@ class TestStartupExceptionLogging:
         assert "startup" in call_args[0][0].lower(), (
             f"Expected 'startup' in exception message, got: {call_args[0][0]!r}"
         )
+
+
+class TestStartupSystemExitHandling:
+    def test_startup_systemexit_converted_to_runtime_error(self):
+        """If startup raises SystemExit the lifespan must convert it to RuntimeError."""
+        from unittest.mock import patch
+
+        from starlette.testclient import TestClient
+
+        from iran.config import IranSettings
+        from iran.main import create_app
+
+        settings = IranSettings(RUN_MIGRATIONS=False)
+        app = create_app(settings)
+
+        with patch("iran.main.make_event_bus", side_effect=SystemExit(1)):
+            with pytest.raises(RuntimeError, match="SystemExit"):
+                with TestClient(app, raise_server_exceptions=True):
+                    pass

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -97,12 +98,18 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_logging(settings.LOG_LEVEL, settings.LOG_FORMAT)
 
-    uvicorn.run(
-        create_app(settings),
-        host=settings.HOST,
-        port=settings.PORT,
-        log_config=None,  # use our own logging configuration
-    )
+    try:
+        uvicorn.run(
+            create_app(settings),
+            host=settings.HOST,
+            port=settings.PORT,
+            log_config=None,  # use our own logging configuration
+        )
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except BaseException as exc:  # noqa: BLE001
+        print(f"[FATAL] uvicorn crashed: {exc}\n{traceback.format_exc()}", file=sys.stderr, flush=True)
+        return 1
     return 0
 
 

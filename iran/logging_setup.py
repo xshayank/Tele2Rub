@@ -34,7 +34,10 @@ class _JsonFormatter(logging.Formatter):
             "msg": record.getMessage(),
         }
         if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
+            try:
+                payload["exc"] = self.formatException(record.exc_info)
+            except Exception as fmt_err:
+                payload["exc"] = f"<traceback formatting failed: {fmt_err}>"
         # Merge any extra fields passed via the ``extra`` kwarg.
         _skip = {
             "name", "msg", "args", "levelname", "levelno", "pathname",
