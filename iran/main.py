@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
+import traceback
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -278,13 +280,28 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 extra={"event": "rubika_skip"},
             )
 
-    except Exception:
-        logger.exception(
-            "Iran service startup failed",
-            extra={"event": "startup_error"},
-        )
+    except BaseException as exc:  # catch SystemExit / KeyboardInterrupt too
+        try:
+            logger.exception(
+                "Iran service startup failed",
+                extra={"event": "startup_error"},
+            )
+        except Exception:
+            # Fallback: logger itself failed — write directly to stderr
+            print(
+                f"[FATAL] Iran service startup failed:\n{traceback.format_exc()}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            # A library called sys.exit() during startup.  Convert to RuntimeError
+            # so uvicorn logs "Application startup failed" instead of a clean exit.
+            raise RuntimeError(
+                f"Iran service startup aborted by {type(exc).__name__}: {exc}"
+            ) from exc
         raise
 
+    logger.info("Iran service started", extra={"event": "startup_complete"})
     yield  # ← application runs here
 
     # ------------------------------------------------------------------
