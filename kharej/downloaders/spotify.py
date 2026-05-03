@@ -58,9 +58,11 @@ async def _download_spotify_track_locally(
 ) -> "Path":
     """Download a Spotify track locally via YouTube search with cookies.
 
-    Always uses yt-dlp with a YouTube search query so that cookies can be
-    passed and bot-detection is avoided.  Returns the local Path of the
-    downloaded audio file.
+    Download order:
+    1. yt-dlp YouTube search (with cookies) — primary path, avoids bot-detection.
+    2. musicdl fallback — used when yt-dlp fails (e.g. cookies not configured).
+
+    Returns the local Path of the downloaded audio file.
     """
     import yt_dlp as _yt_dlp  # noqa: PLC0415
 
@@ -93,6 +95,21 @@ async def _download_spotify_track_locally(
         logger.warning({"event": "spotify.ytdlp_no_mp3", "query": query})
     except Exception as exc:
         logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
+
+    # Fallback: musicdl (does not require cookies, but has no cookie support)
+    try:
+        from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
+
+        client = MusicdlClient()
+        musicdl_query = f"{artist} - {title}" if artist else title
+        await asyncio.to_thread(client.download, musicdl_query, str(tmp_dir))
+        for ext in ("*.mp3", "*.flac", "*.m4a", "*.opus", "*.ogg"):
+            audio_path = next(tmp_dir.glob(ext), None)
+            if audio_path is not None:
+                return audio_path
+        logger.warning({"event": "spotify.musicdl_no_file", "query": musicdl_query})
+    except Exception as exc:
+        logger.warning({"event": "spotify.musicdl_failed", "error": repr(exc)})
 
     raise RuntimeError(
         f"All download sources failed for track: {artist!r} - {title!r}. "
