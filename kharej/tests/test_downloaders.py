@@ -951,34 +951,35 @@ async def test_spotify_downloader_embed_metadata_failure_does_not_abort() -> Non
     assert refs[0] is _DUMMY_REF
 
 
-@pytest.mark.asyncio
-async def test_youtube_downloader_calls_embed_metadata_from_info_json(tmp_path: Path) -> None:
-    """YoutubeDownloader.run should call embed_metadata when an info.json file is present."""
-    import json
+def test_youtube_build_command_does_not_include_write_info_json() -> None:
+    """_build_command must not request --write-info-json (metadata fetch is for searcher only)."""
+    from kharej.downloaders.youtube import _build_command
 
+    cmd = _build_command(
+        ytdlp_bin="/usr/bin/yt-dlp",
+        url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        outtmpl="/tmp/%(title)s.%(ext)s",
+        quality="mp3",
+        cookies_path=None,
+    )
+    assert "--write-info-json" not in cmd
+
+
+@pytest.mark.asyncio
+async def test_youtube_downloader_does_not_embed_info_json_metadata(tmp_path: Path) -> None:
+    """YoutubeDownloader.run must not perform metadata embedding from info.json."""
     job = _make_job(quality="mp3")
     s2 = _make_s2(_DUMMY_REF)
     progress = _make_progress()
     settings = _make_settings()
 
-    yt_info = {
-        "title": "YouTube Test Track",
-        "uploader": "Test Channel",
-        "channel": "Test Channel",
-        "album": None,
-        "upload_date": "20240101",
-        "thumbnail": None,
-        "track_number": None,
-    }
-
     def _fake_subprocess(cmd, job_id, loop, progress_coro_factory):
+        # Assert the command never requests --write-info-json
+        assert "--write-info-json" not in cmd
         idx = cmd.index("--output")
         out_dir = Path(cmd[idx + 1]).parent
         audio_file = out_dir / "YouTube Test Track.mp3"
         audio_file.write_bytes(b"\xff\xfb" * 512)
-        # Write the info.json alongside the audio file
-        info_json = out_dir / "YouTube Test Track.info.json"
-        info_json.write_text(json.dumps(yt_info), encoding="utf-8")
 
     embed_calls: list[tuple] = []
 
@@ -993,10 +994,7 @@ async def test_youtube_downloader_calls_embed_metadata_from_info_json(tmp_path: 
 
     assert len(refs) == 1
     assert refs[0] is _DUMMY_REF
-    assert len(embed_calls) == 1, "embed_metadata should have been called with info from .info.json"
-    called_path, called_info = embed_calls[0]
-    assert called_info["title"] == "YouTube Test Track"
-    assert called_info["artists"] == ["Test Channel"]
+    assert len(embed_calls) == 0, "embed_metadata must not be called during download"
 
 
 @pytest.mark.asyncio

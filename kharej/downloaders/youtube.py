@@ -141,7 +141,6 @@ def _build_command(
         "--ignore-no-formats-error",
     ]
     cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
-    cmd += ["--write-info-json"]
 
     if _is_audio_quality(quality):
         cmd += [
@@ -268,33 +267,6 @@ class YoutubeDownloader:
             candidates = media_files or files
             local_path = max(candidates, key=lambda p: p.stat().st_mtime)
             ext = local_path.suffix.lstrip(".")
-
-            # Try to embed metadata from the yt-dlp info JSON
-            _info_json = local_path.with_suffix(".info.json")
-            _yt_info: dict = {}
-            if _info_json.exists():
-                import json  # noqa: PLC0415
-                try:
-                    _yt_info = json.loads(_info_json.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-
-            if _yt_info:
-                _uploader = _yt_info.get("uploader") or _yt_info.get("channel") or ""
-                _tag_info = {
-                    "title": _yt_info.get("title") or local_path.stem,
-                    "artists": [_uploader] if _uploader else [],
-                    "album": _yt_info.get("album") or None,
-                    "release_date": str(_yt_info.get("upload_date") or ""),
-                    "cover_url": _yt_info.get("thumbnail") or None,
-                    "track_number": _yt_info.get("track_number") or 1,
-                    "disc_number": 1,
-                }
-                try:
-                    from rubetunes.tagging import embed_metadata  # noqa: PLC0415
-                    embed_metadata(local_path, _tag_info)
-                except Exception as _te:
-                    logger.warning({"event": "youtube.tag_failed", "error": repr(_te)})
 
             stem = safe_filename(local_path.stem)
             s2_filename = f"{stem}.{ext}" if ext else stem
