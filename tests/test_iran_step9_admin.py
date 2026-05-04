@@ -114,6 +114,7 @@ async def app(db_engine):
     stub_s2 = MagicMock()
     stub_s2.generate_presigned_url.return_value = "https://s3.example.com/presigned"
     stub_s2.list_job_objects = AsyncMock(return_value=[])
+    stub_s2.list_objects_by_prefix = AsyncMock(return_value=[])
     test_app.state.s2_client = stub_s2
 
     test_app.state.event_bus = make_event_bus()
@@ -532,6 +533,47 @@ class TestAdminStorage:
         data = r.json()
         assert "total_objects" in data
         assert "total_bytes" in data
+
+    @pytest.mark.asyncio
+    async def test_get_storage_merges_media_and_thumbs(self, admin_client, app):
+        """list_objects_by_prefix called for media/ and thumbs/; results merged."""
+        media_obj = {"key": "media/job1/track.mp3", "size": 1024, "last_modified": "2024-01-01T00:00:00"}
+        thumbs_obj = {"key": "thumbs/search/yt/abc.jpg", "size": 512, "last_modified": "2024-01-02T00:00:00"}
+
+        async def _fake_list(prefix: str) -> list[dict]:
+            if prefix == "media/":
+                return [media_obj]
+            if prefix == "thumbs/":
+                return [thumbs_obj]
+            return []
+
+        app.state.s2_client.list_objects_by_prefix = _fake_list
+
+        r = await admin_client.get("/admin/storage")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total_objects"] == 2
+        assert data["total_bytes"] == 1024 + 512
+        keys = {o["key"] for o in data["objects"]}
+        assert "media/job1/track.mp3" in keys
+        assert "thumbs/search/yt/abc.jpg" in keys
+        # Verify field names are normalised
+        for obj in data["objects"]:
+            assert "key" in obj
+            assert "size" in obj
+            assert "last_modified" in obj
+
+    @pytest.mark.asyncio
+    async def test_get_storage_no_s2_client_returns_503(self, admin_client, app):
+        """503 with clear detail when s2_client is None."""
+        original = app.state.s2_client
+        app.state.s2_client = None
+        try:
+            r = await admin_client.get("/admin/storage")
+            assert r.status_code == 503
+            assert "not configured" in r.json()["detail"].lower()
+        finally:
+            app.state.s2_client = original
 
 
 # ===========================================================================

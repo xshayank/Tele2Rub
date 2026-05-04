@@ -19,6 +19,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reaches a terminal state (`completed`, `failed`, `cancelled`). Polling is also
   paused when the tab is hidden and resumed when it becomes visible again.
 
+### Fixed
+
+- Fix: `/admin/ui/storage` now correctly displays objects and surfaces errors when the storage backend is unavailable.
+
 ---
 
 ## [Unreleased] — Search Feature PR

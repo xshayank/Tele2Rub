@@ -27,16 +27,45 @@ function formatBytes(b) {
   return (b/1048576).toFixed(1) + ' MB';
 }
 
+function showError(msg) {
+  const el = document.getElementById('action-result');
+  el.style.display = '';
+  el.className = 'alert alert-error';
+  el.textContent = msg;
+  const tbody = document.getElementById('objects-tbody');
+  tbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted)">—</td></tr>';
+}
+
 async function load() {
   const r = await window.authFetch('/admin/storage');
   if (!r) return;
   if (r.status === 403) { window.location = '/login'; return; }
-  const data = await r.json();
-  document.getElementById('total-objects').textContent = data.total_objects;
-  document.getElementById('total-bytes').textContent = formatBytes(data.total_bytes);
+  if (!r.ok) {
+    let detail = '';
+    try {
+      const err = await r.json();
+      if (err && err.detail) detail = ': ' + err.detail;
+    } catch (_) {}
+    showError('خطا در دریافت اطلاعات ذخیره‌سازی' + detail);
+    return;
+  }
+  let data;
+  try {
+    data = await r.json();
+  } catch (_) {
+    showError('خطا در پردازش پاسخ سرور');
+    return;
+  }
+  document.getElementById('total-objects').textContent = data.total_objects ?? 0;
+  document.getElementById('total-bytes').textContent = formatBytes(data.total_bytes ?? 0);
   const tbody = document.getElementById('objects-tbody');
   tbody.innerHTML = '';
-  (data.objects ?? []).forEach(o => {
+  const objects = data.objects ?? [];
+  if (!objects.length) {
+    tbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted)">0 آبجکت</td></tr>';
+    return;
+  }
+  objects.forEach(o => {
     const tr = document.createElement('tr');
     tr.innerHTML = `<td class="num">${o.key}</td><td class="num">${formatBytes(o.size)}</td><td class="num">${o.last_modified?.slice(0,16).replace('T',' ') ?? ''}</td>`;
     tbody.appendChild(tr);

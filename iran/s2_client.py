@@ -84,6 +84,10 @@ class S2ClientProtocol(Protocol):
         """Return info dicts for every S2 object under ``media/{job_id}/``."""
         ...
 
+    async def list_objects_by_prefix(self, prefix: str) -> list[dict]:
+        """Return info dicts for every S2 object whose key starts with *prefix*."""
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Real implementation
@@ -216,6 +220,31 @@ class IranS2Client:
 
         return await asyncio.to_thread(_list)
 
+    async def list_objects_by_prefix(self, prefix: str) -> list[dict]:
+        """Return info dicts for every S2 object whose key starts with *prefix*.
+
+        Each dict contains: ``key`` (str), ``size`` (int),
+        ``last_modified`` (ISO-8601 str).
+        """
+
+        def _list() -> list[dict]:
+            objects: list[dict] = []
+            paginator = self._s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(
+                Bucket=self._config.bucket, Prefix=prefix
+            ):
+                for obj in page.get("Contents", []):
+                    objects.append(
+                        {
+                            "key": obj["Key"],
+                            "size": obj["Size"],
+                            "last_modified": obj["LastModified"].isoformat(),
+                        }
+                    )
+            return objects
+
+        return await asyncio.to_thread(_list)
+
 
 # ---------------------------------------------------------------------------
 # Stub (used when S2 credentials are not configured)
@@ -240,6 +269,10 @@ class _StubS2Client:
 
     async def list_job_objects(self, job_id: str) -> list[dict]:  # noqa: ARG002
         logger.debug("StubS2Client.list_job_objects (no-op)", extra={"job_id": job_id})
+        return []
+
+    async def list_objects_by_prefix(self, prefix: str) -> list[dict]:  # noqa: ARG002
+        logger.debug("StubS2Client.list_objects_by_prefix (no-op)", extra={"prefix": prefix})
         return []
 
 
