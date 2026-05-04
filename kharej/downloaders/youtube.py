@@ -132,8 +132,7 @@ def _build_command(
         "--newline",
         "--no-warnings",
     ]
-    if cookies_path:
-        cmd += ["--cookies", cookies_path]
+    cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
     cmd += ["--write-info-json"]
 
     if _is_audio_quality(quality):
