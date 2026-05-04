@@ -137,7 +137,7 @@ async def _create_active_user_token(session_factory) -> str:
         s.add(user)
         await s.commit()
 
-    return create_access_token({"sub": user_id, "role": "user"})
+    return create_access_token(user_id, "user", "active")
 
 
 # ---------------------------------------------------------------------------
@@ -364,5 +364,40 @@ async def test_thumb_invalid_prefix_returns_400(app, client, session_factory) ->
         "/search/thumb",
         params={"key": "media/some-job-id/file.mp3"},
         headers=headers,
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_thumb_query_token_auth_redirects(app, client, session_factory) -> None:
+    """GET /search/thumb with ?token=<jwt> (no Authorization header) → 302 redirect."""
+    token = await _create_active_user_token(session_factory)
+
+    resp = await client.get(
+        "/search/thumb",
+        params={"key": "thumbs/search/yt/dQw4w9WgXcQ.jpg", "token": token},
+    )
+    assert resp.status_code == 302
+    assert "presigned" in resp.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_thumb_no_auth_returns_401(app, client, session_factory) -> None:
+    """GET /search/thumb with neither header nor token → 401."""
+    resp = await client.get(
+        "/search/thumb",
+        params={"key": "thumbs/search/yt/dQw4w9WgXcQ.jpg"},
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_thumb_invalid_prefix_with_query_token_returns_400(app, client, session_factory) -> None:
+    """GET /search/thumb with valid ?token= but forbidden key prefix → 400."""
+    token = await _create_active_user_token(session_factory)
+
+    resp = await client.get(
+        "/search/thumb",
+        params={"key": "media/foo.mp3", "token": token},
     )
     assert resp.status_code == 400
