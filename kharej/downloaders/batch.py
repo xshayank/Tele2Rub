@@ -53,6 +53,8 @@ logger = logging.getLogger("kharej.downloaders.batch")
 _DEFAULT_CONCURRENCY = 2
 # Default threshold (MB) above which ZIP splitting is attempted.
 _DEFAULT_THRESHOLD_MB = 200
+# Media file extensions that yt-dlp may produce.
+_MEDIA_EXTS = {".mp3", ".m4a", ".flac", ".ogg", ".opus", ".mp4", ".mkv"}
 
 
 class BatchDownloader:
@@ -286,9 +288,6 @@ class BatchDownloader:
                                 loop,
                                 _noop_progress,
                             )
-                            _MEDIA_EXTS = {
-                                ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".mp4", ".mkv",
-                            }
                             new_files = [
                                 p
                                 for p in track_subdir.iterdir()
