@@ -134,15 +134,7 @@ def _build_command(
         # Enable remote JS challenge solver for YouTube bot detection bypass
         "--remote-components", "ejs:npm",
     ]
-    if cookies_path and Path(cookies_path).is_file():
-        cmd += ["--cookies", cookies_path]
-        logger.info({"event": "youtube.cookies_applied", "path": cookies_path})
-    elif cookies_path:
-        logger.warning({
-            "event": "youtube.cookies_missing",
-            "path": cookies_path,
-            "msg": "cookies file not found, proceeding without cookies",
-        })
+    cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
 
     if _is_audio_quality(quality):
         cmd += [

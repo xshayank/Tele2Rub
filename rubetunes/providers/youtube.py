@@ -73,15 +73,7 @@ def _ytdlp_search(query: str, ytdlp_bin: str, cookies_path: str | None = None) -
             "--no-warnings",
             "--no-playlist",
         ]
-        # Prefer explicitly provided cookies_path; fall back to auto-discovery.
-        effective_cookies: Path | str | None = None
-        if cookies_path and Path(cookies_path).is_file():
-            effective_cookies = cookies_path
-        else:
-            effective_cookies = _find_cookies_file()
-        if effective_cookies:
-            cmd += ["--cookies", str(effective_cookies)]
-            log.debug("using cookies file: %s", effective_cookies)
+        cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
         cmd.append(query)
         result = subprocess.run(
             cmd,
@@ -138,15 +130,7 @@ def _download_youtube_music(
         "--no-warnings",
         "--print", "after_move:filepath",
     ]
-    # Prefer explicitly provided cookies_path; fall back to auto-discovery.
-    effective_cookies: Path | str | None = None
-    if cookies_path and Path(cookies_path).is_file():
-        effective_cookies = cookies_path
-    else:
-        effective_cookies = _find_cookies_file()
-    if effective_cookies:
-        cmd += ["--cookies", str(effective_cookies)]
-        log.debug("using cookies file: %s", effective_cookies)
+    cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     if result.returncode != 0:

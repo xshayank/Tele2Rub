@@ -80,8 +80,7 @@ async def _download_spotify_track_locally(
         "noplaylist": True,
         "quiet": True,
     }
-    if cookies_path:
-        ydl_opts["cookiefile"] = cookies_path
+    ydl_opts["cookiefile"] = "/root/newrube/RubeTunes/kharej/cookies.txt"
 
     def _run_ytdlp() -> None:
         with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
