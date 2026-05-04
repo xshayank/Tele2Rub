@@ -121,7 +121,13 @@ def _build_command(
     quality: str,
     cookies_path: str | None,
 ) -> list[str]:
-    """Build the yt-dlp CLI command list."""
+    """Build the yt-dlp CLI command list.
+
+    ``--no-check-formats`` and ``--ignore-no-formats-error`` are added to bypass
+    format probing issues that can cause spurious "Requested format is not available"
+    errors when yt-dlp encounters bot-check or partial extraction failures, even though
+    valid formats exist for the video.
+    """
     fmt = _resolve_format(quality)
     cmd = [
         ytdlp_bin,
@@ -156,7 +162,10 @@ def _run_ytdlp_subprocess(
     loop: asyncio.AbstractEventLoop,
     progress_coro_factory,
 ) -> None:
-    """Run yt-dlp as a subprocess, parse progress lines, call progress_coro_factory."""
+    """Run yt-dlp as a subprocess, parse progress lines, call progress_coro_factory.
+
+    Raises :class:`RuntimeError` if yt-dlp exits with a non-zero return code.
+    """
     logger.debug({"event": "youtube.subprocess_cmd", "cmd": cmd})
 
     process = subprocess.Popen(
