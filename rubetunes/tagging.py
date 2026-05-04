@@ -24,7 +24,30 @@ def _safe_filename(s: str) -> str:
 
 
 def embed_metadata(filepath: Path, info: dict) -> None:
-    """Embed ID3 (MP3) or Vorbis/FLAC tags and cover art using mutagen."""
+    """Embed ID3 (MP3) or Vorbis/FLAC tags and cover art using mutagen.
+
+    Lyrics are fetched automatically from lrclib.net when ``info`` has a
+    ``title`` and at least one ``artist`` but no ``lyrics`` key.
+    """
+    # Fetch lyrics from lrclib.net if not already present in info
+    if not info.get("lyrics") and info.get("title") and info.get("artists"):
+        try:
+            from rubetunes.spotify_meta import get_lyrics  # noqa: PLC0415
+
+            artists = info["artists"]
+            artist_str = artists[0] if isinstance(artists, list) else str(artists)
+            lyrics = get_lyrics(
+                info["title"],
+                artist_str,
+                album_name=info.get("album", ""),
+                duration=int(info.get("duration", 0) or 0),
+            )
+            if lyrics:
+                info["lyrics"] = lyrics
+                log.debug("Lyrics fetched from lrclib for %r", info.get("title"))
+        except Exception as exc:
+            log.debug("lrclib lyrics fetch failed: %s", exc)
+
     try:
         from mutagen.id3 import (
             ID3, ID3NoHeaderError,
