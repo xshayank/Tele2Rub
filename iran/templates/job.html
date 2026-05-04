@@ -2,41 +2,72 @@
 {% block title %}پیشرفت کار — RubeTunes{% endblock %}
 {% block head %}
 <style>
-  #phase-badge { margin-right: 0.5rem; }
-  #download-list { margin-top: 1rem; }
+  .job-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+    flex-wrap: wrap;
+  }
+  .job-header h1 { margin: 0; }
+  .progress-section { margin: 1rem 0; }
+  .progress-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.83rem;
+    color: var(--muted);
+    margin-top: 0.3rem;
+  }
+  #download-list { margin-top: 1.25rem; }
   .download-card {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.75rem 1rem;
+    gap: 1rem;
+    padding: 0.85rem 1rem;
     border: 1px solid var(--border);
-    border-radius: 0.4rem;
-    margin-bottom: 0.5rem;
+    border-radius: var(--radius-sm);
+    margin-bottom: 0.6rem;
     background: var(--bg);
+    transition: border-color var(--transition);
   }
-  .download-card .filename { font-weight: 500; margin-bottom: 0.2rem; }
-  .download-card .meta { font-size: 0.8rem; color: var(--muted); direction: ltr; text-align: left; }
+  .download-card:hover { border-color: var(--accent); }
+  .download-card .filename { font-weight: 600; margin-bottom: 0.15rem; font-size: 0.92rem; }
+  .download-card .meta { font-size: 0.78rem; color: var(--muted); direction: ltr; text-align: left; }
   #error-box { margin-top: 1rem; }
+  @media (max-width: 480px) {
+    .download-card { flex-direction: column; align-items: flex-start; }
+    .download-card button { width: 100%; }
+  }
 </style>
 {% endblock %}
 {% block content %}
 <div style="margin-bottom:1rem">
-  <a href="/library">← کتابخانه</a>
+  <a href="/library" style="display:inline-flex; align-items:center; gap:0.3rem; color:var(--muted); font-size:0.88rem;">
+    ← بازگشت به کتابخانه
+  </a>
 </div>
 <div class="card">
-  <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:1rem">
-    <h1 style="margin:0">وضعیت کار</h1>
+  <div class="job-header">
+    <h1>وضعیت کار</h1>
     <span id="status-badge" class="badge badge-pending">در انتظار</span>
-    <span id="phase-badge" class="badge" style="display:none"></span>
+    <span id="phase-badge" class="badge badge-running" style="display:none"></span>
   </div>
-  <p id="job-meta" style="font-size:0.85rem; color:var(--muted)">شناسه: <span class="num">{{ job_id }}</span></p>
-  <progress id="progress-bar" value="0" max="100"></progress>
-  <div id="progress-text" style="font-size:0.85rem; color:var(--muted); margin-bottom:0.5rem" class="num"></div>
-  <div id="track-text" style="font-size:0.85rem; color:var(--muted); margin-bottom:0.5rem"></div>
+  <p style="font-size:0.83rem; color:var(--muted); margin-bottom:1rem">
+    شناسه: <span class="num" style="font-family:monospace; background:var(--surface-raised); padding:0.1rem 0.4rem; border-radius:0.25rem; font-size:0.8rem;">{{ job_id }}</span>
+  </p>
+  <div class="progress-section">
+    <progress id="progress-bar" value="0" max="100"></progress>
+    <div class="progress-meta">
+      <span id="track-text"></span>
+      <span id="progress-text" class="num"></span>
+    </div>
+  </div>
   <div id="error-box"></div>
   <div id="download-list"></div>
-  <div style="margin-top:1rem">
-    <button id="cancel-btn" class="btn btn-danger" style="display:none">لغو کار</button>
+  <div style="margin-top:1.25rem">
+    <button id="cancel-btn" class="btn btn-danger" style="display:none">🚫 لغو کار</button>
   </div>
 </div>
 {% endblock %}
@@ -55,6 +86,11 @@
   var errorBox = document.getElementById('error-box');
   var downloadList = document.getElementById('download-list');
   var cancelBtn = document.getElementById('cancel-btn');
+
+  var _isTerminal = false;
+  var _sseActive = false;
+  var _pollTimer = null;
+  var POLL_INTERVAL_MS = 5000;
 
   var statusLabels = {
     'pending': 'در انتظار', 'accepted': 'پذیرفته شد',
@@ -165,17 +201,22 @@
       if (!data) return;
       applyUpdate(data);
       if (data.status === 'completed') {
+        _isTerminal = true;
         // Fetch download parts
         window.authFetch('/jobs/' + JOB_ID + '/download')
           .then(function(r) { return r.json(); })
           .then(function(d) { if (d.parts) renderDownloads(d.parts); });
         return; // No SSE needed
       }
-      if (data.status === 'failed' || data.status === 'cancelled') return;
+      if (data.status === 'failed' || data.status === 'cancelled') {
+        _isTerminal = true;
+        return;
+      }
       startSSE();
     });
 
   function startSSE() {
+    _sseActive = true;
     var url = '/jobs/' + JOB_ID + '/events';
     var es = new EventSource(url + '?token=' + encodeURIComponent(window.getToken()));
     es.onmessage = function(e) {
@@ -183,17 +224,86 @@
         var data = JSON.parse(e.data);
         applyUpdate(data);
         if (data.type === 'job.completed') {
+          _isTerminal = true;
+          _sseActive = false;
           es.close();
           // Fetch download list
           window.authFetch('/jobs/' + JOB_ID + '/download')
             .then(function(r) { return r.json(); })
             .then(function(d) { if (d.parts) renderDownloads(d.parts); });
         }
-        if (data.type === 'job.failed' || data.type === 'job.cancelled') { es.close(); }
+        if (data.type === 'job.failed' || data.type === 'job.cancelled') {
+          _isTerminal = true;
+          _sseActive = false;
+          es.close();
+        }
       } catch (_) {}
     };
-    es.onerror = function() { es.close(); };
+    es.onerror = function() {
+      _sseActive = false;
+      es.close();
+      // Fall back to polling when SSE is unavailable
+      if (!_isTerminal) scheduleNextPoll();
+    };
   }
+
+  function clearPollTimer() {
+    if (_pollTimer !== null) { clearTimeout(_pollTimer); _pollTimer = null; }
+  }
+
+  // ── Polling fallback (used when SSE fails) ───────────────────────
+  function scheduleNextPoll() {
+    if (_isTerminal || _sseActive) return;
+    _pollTimer = setTimeout(doPoll, POLL_INTERVAL_MS);
+  }
+
+  async function doPoll() {
+    _pollTimer = null;
+    if (_isTerminal || _sseActive) return;
+    try {
+      var r = await window.authFetch('/jobs/' + JOB_ID);
+      if (r.status === 403 || r.status === 404) {
+        _isTerminal = true;
+        window.location.href = '/library';
+        return;
+      }
+      var data = await r.json();
+      // Clear any transient error notice on success
+      var notice = document.getElementById('refresh-notice');
+      if (notice) notice.remove();
+      applyUpdate(data);
+      if (data.status === 'completed') {
+        _isTerminal = true;
+        window.authFetch('/jobs/' + JOB_ID + '/download')
+          .then(function(r2) { return r2.json(); })
+          .then(function(d) { if (d.parts) renderDownloads(d.parts); });
+        return;
+      }
+      if (data.status === 'failed' || data.status === 'cancelled') {
+        _isTerminal = true;
+        return;
+      }
+    } catch (_ex) {
+      if (!document.getElementById('refresh-notice')) {
+        var div = document.createElement('div');
+        div.id = 'refresh-notice';
+        div.className = 'alert alert-info';
+        div.style.marginTop = '0.5rem';
+        div.textContent = 'خطا در بروزرسانی وضعیت، دوباره تلاش می‌شود…';
+        errorBox.appendChild(div);
+      }
+    }
+    scheduleNextPoll();
+  }
+
+  // Pause polling while tab is hidden; resume when visible again
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+      clearPollTimer();
+    } else {
+      if (!_isTerminal && !_sseActive && _pollTimer === null) scheduleNextPoll();
+    }
+  });
 
   async function doDownload(jobId, part) {
     var r = await window.authFetch('/jobs/' + jobId + '/download?part=' + part + '&url=1');

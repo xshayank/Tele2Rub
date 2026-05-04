@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}تنظیمات — RubeTunes{% endblock %}
 {% block content %}
-<h1>تنظیمات حساب</h1>
+<h1 class="page-title">⚙️ تنظیمات حساب</h1>
 
 <div class="card">
   <h2>اطلاعات پروفایل</h2>
@@ -9,7 +9,7 @@
   <form id="profile-form">
     <div class="form-group">
       <label for="display_name">نام نمایشی</label>
-      <input type="text" id="display_name" name="display_name" placeholder="نام شما" required />
+      <input type="text" id="display_name" name="display_name" placeholder="نام شما" required style="direction:rtl; text-align:right;" />
     </div>
     <button type="submit" class="btn btn-primary">ذخیره تغییرات</button>
   </form>
@@ -21,23 +21,23 @@
   <form id="pw-form">
     <div class="form-group">
       <label for="old_password">رمز عبور فعلی</label>
-      <input type="password" id="old_password" name="old_password" placeholder="••••••••" required />
+      <input type="password" id="old_password" name="old_password" placeholder="••••••••" required autocomplete="current-password" />
     </div>
     <div class="form-group">
       <label for="new_password">رمز عبور جدید</label>
-      <input type="password" id="new_password" name="new_password" placeholder="••••••••" minlength="8" required />
+      <input type="password" id="new_password" name="new_password" placeholder="••••••••" minlength="8" required autocomplete="new-password" />
     </div>
     <button type="submit" class="btn btn-primary">تغییر رمز</button>
   </form>
 </div>
 
-<div class="card" style="border-color: var(--danger)">
-  <h2 style="color:var(--danger)">منطقه خطر</h2>
-  <p style="font-size:0.9rem; color:var(--muted); margin-bottom:1rem">
-    با حذف حساب، تمام داده‌های شما به صورت نرم حذف می‌شوند.
+<div class="card" style="border-color:rgba(248,113,113,0.4)">
+  <h2 style="color:var(--danger)">⚠️ منطقه خطر</h2>
+  <p style="font-size:0.9rem; color:var(--muted); margin-bottom:1rem; line-height:1.6;">
+    با حذف حساب، تمام داده‌های شما به صورت نرم حذف می‌شوند. این عملیات قابل بازگشت نیست.
   </p>
   <div id="delete-msg"></div>
-  <button id="delete-btn" class="btn btn-danger">حذف حساب</button>
+  <button id="delete-btn" class="btn btn-danger">🗑 حذف حساب</button>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -47,9 +47,6 @@
   if (!token) { window.location.href = '/login'; return; }
 
   // Profile form — display name update
-  // (Note: The auth API currently does not expose a PATCH /users/me endpoint;
-  //  that will be added in Step 9. For now the form is pre-populated via
-  //  GET /auth/refresh token claims and the submit is a no-op with feedback.)
   document.getElementById('profile-form').addEventListener('submit', async function(e) {
     e.preventDefault();
     var msg = document.getElementById('profile-msg');
@@ -60,7 +57,10 @@
   document.getElementById('pw-form').addEventListener('submit', async function(e) {
     e.preventDefault();
     var msg = document.getElementById('pw-msg');
+    var btn = e.target.querySelector('button[type=submit]');
     msg.innerHTML = '';
+    btn.disabled = true;
+    btn.textContent = 'در حال تغییر...';
     var body = {
       old_password: document.getElementById('old_password').value,
       new_password: document.getElementById('new_password').value
@@ -71,21 +71,21 @@
       body: JSON.stringify(body)
     });
     if (resp.ok) {
-      msg.innerHTML = '<div class="alert alert-success">رمز عبور با موفقیت تغییر کرد.</div>';
+      msg.innerHTML = '<div class="alert alert-success">✅ رمز عبور با موفقیت تغییر کرد.</div>';
       document.getElementById('pw-form').reset();
     } else {
       var err = await resp.json().catch(function() { return {}; });
       msg.innerHTML = '<div class="alert alert-error">' + (err.detail || 'خطا در تغییر رمز') + '</div>';
     }
+    btn.disabled = false;
+    btn.textContent = 'تغییر رمز';
   });
 
   // Delete account
   document.getElementById('delete-btn').addEventListener('click', async function() {
     if (!confirm('آیا مطمئن هستید؟ این عملیات قابل بازگشت نیست.')) return;
     var msg = document.getElementById('delete-msg');
-    var resp = await window.authFetch('/auth/delete-account', {
-      method: 'DELETE'
-    });
+    var resp = await window.authFetch('/auth/delete-account', { method: 'DELETE' });
     if (resp.ok) {
       window.clearToken();
       window.location.href = '/login';

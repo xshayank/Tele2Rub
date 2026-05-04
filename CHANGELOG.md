@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased] — UI Modernization PR
+
+### Added
+
+- **UI: site-wide modern restyle + mobile-responsive layout**: refreshed all pages
+  with a consistent card-based design, CSS custom properties, improved button/input
+  focus states (`focus-visible`), and a collapsible hamburger navigation menu for
+  viewports ≤ 640 px.
+- **UI: job detail page now auto-refreshes status every 5 seconds**: the job page
+  uses Server-Sent Events (SSE) for real-time updates; if SSE is unavailable it
+  automatically falls back to a 5-second polling loop that stops once the job
+  reaches a terminal state (`completed`, `failed`, `cancelled`). Polling is also
+  paused when the tab is hidden and resumed when it becomes visible again.
+
+---
+
 ## [Unreleased] — Search Feature PR
 
 ### Added — Search

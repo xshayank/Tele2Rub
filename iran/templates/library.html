@@ -1,25 +1,27 @@
 {% extends "base.html" %}
 {% block title %}کتابخانه — RubeTunes{% endblock %}
 {% block content %}
-<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem">
-  <h1>کتابخانه دانلودها</h1>
-  <div style="display:flex; gap:0.5rem; align-items:center">
-    <label for="filter-status" style="margin:0; color:var(--muted); font-size:0.9rem">فیلتر:</label>
-    <select id="filter-status" style="width:auto; margin:0; font-size:0.9rem; padding:0.4rem 0.6rem">
-      <option value="">همه</option>
-      <option value="completed">تکمیل شده</option>
-      <option value="running">در حال اجرا</option>
-      <option value="failed">خطا</option>
-      <option value="pending">در انتظار</option>
-      <option value="cancelled">لغو شده</option>
+<div class="flex-between" style="margin-bottom:1.25rem">
+  <h1 class="page-title" style="margin:0">📚 کتابخانه</h1>
+  <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
+    <select id="filter-status" style="width:auto; margin:0; font-size:0.88rem; padding:0.4rem 0.65rem; min-height:38px">
+      <option value="">همه وضعیت‌ها</option>
+      <option value="completed">✅ تکمیل شده</option>
+      <option value="running">⏳ در حال اجرا</option>
+      <option value="failed">❌ خطا</option>
+      <option value="pending">🕐 در انتظار</option>
+      <option value="cancelled">🚫 لغو شده</option>
     </select>
-    <a href="/" class="btn btn-primary" style="font-size:0.9rem; padding:0.4rem 0.8rem">+ دانلود جدید</a>
+    <a href="/" class="btn btn-primary btn-sm">+ دانلود جدید</a>
   </div>
 </div>
 
 <div class="card" style="padding:0; overflow:hidden">
-  <div id="jobs-container">
-    <div style="padding:2rem; text-align:center; color:var(--muted)">در حال بارگذاری...</div>
+  <div class="table-scroll" id="jobs-container">
+    <div style="padding:2.5rem; text-align:center; color:var(--muted)">
+      <div style="font-size:2rem; margin-bottom:0.5rem">⏳</div>
+      در حال بارگذاری...
+    </div>
   </div>
   <div id="pagination" class="pagination" style="padding:1rem"></div>
 </div>
@@ -66,16 +68,14 @@
     return formatBytes(total);
   }
   function shortUrl(url) {
-    try { var u = new URL(url); return u.hostname + u.pathname.substring(0, 30) + (u.pathname.length > 30 ? '…' : ''); }
-    catch (_) { return url.substring(0, 50); }
+    try { var u = new URL(url); return u.hostname + u.pathname.substring(0, 28) + (u.pathname.length > 28 ? '…' : ''); }
+    catch (_) { return url.substring(0, 40); }
   }
 
   function loadJobs() {
     var url = '/jobs?page=' + currentPage + '&per_page=' + perPage;
     window.authFetch(url)
-      .then(function(r) {
-        return r.json();
-      })
+      .then(function(r) { return r.json(); })
       .then(function(data) {
         if (!data) return;
         var jobs = data.jobs || [];
@@ -87,26 +87,29 @@
   function renderJobs(jobs, total, page, perPage) {
     var container = document.getElementById('jobs-container');
     if (jobs.length === 0) {
-      container.innerHTML = '<div style="padding:2rem; text-align:center; color:var(--muted)">هیچ کاری یافت نشد.</div>';
+      container.innerHTML = '<div style="padding:3rem; text-align:center; color:var(--muted)"><div style="font-size:2rem;margin-bottom:0.5rem">📭</div>هیچ کاری یافت نشد.</div>';
       document.getElementById('pagination').innerHTML = '';
       return;
     }
-    var html = '<table><thead><tr><th>پلتفرم</th><th>لینک</th><th>وضعیت</th><th>تاریخ</th><th>حجم</th><th>عملیات</th></tr></thead><tbody>';
+    var html = '<table><thead><tr>'
+      + '<th>پلتفرم</th><th>لینک</th><th>وضعیت</th>'
+      + '<th class="hide-mobile">تاریخ</th><th class="hide-mobile">حجم</th><th>عملیات</th>'
+      + '</tr></thead><tbody>';
     jobs.forEach(function(j) {
       var icon = platformIcons[j.platform] || '🎵';
       var badge = '<span class="badge ' + (badgeClass[j.status] || '') + '">' + (statusLabels[j.status] || j.status) + '</span>';
       var size = totalSize(j.s2_keys);
-      var actions = '<a href="/ui/jobs/' + j.job_id + '" class="btn btn-secondary" style="font-size:0.8rem;padding:0.3rem 0.6rem">مشاهده</a>';
+      var actions = '<a href="/ui/jobs/' + j.job_id + '" class="btn btn-secondary btn-sm">مشاهده</a>';
       if (j.status === 'completed') {
-        actions += ' <button class="btn btn-primary" style="font-size:0.8rem;padding:0.3rem 0.6rem" onclick="doDownload(\'' + j.job_id + '\')">دانلود</button>';
+        actions += ' <button class="btn btn-primary btn-sm" onclick="doDownload(\'' + j.job_id + '\')">⬇ دانلود</button>';
       }
       html += '<tr>';
-      html += '<td>' + icon + ' ' + j.platform + '</td>';
+      html += '<td><span style="font-size:1.1rem">' + icon + '</span> <span class="hide-mobile">' + j.platform + '</span></td>';
       html += '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + j.url + '" class="num">' + shortUrl(j.url) + '</td>';
       html += '<td>' + badge + '</td>';
-      html += '<td class="num">' + formatDate(j.created_at) + '</td>';
-      html += '<td class="num">' + (size || '—') + '</td>';
-      html += '<td>' + actions + '</td>';
+      html += '<td class="num hide-mobile">' + formatDate(j.created_at) + '</td>';
+      html += '<td class="num hide-mobile">' + (size || '—') + '</td>';
+      html += '<td style="white-space:nowrap">' + actions + '</td>';
       html += '</tr>';
     });
     html += '</tbody></table>';
@@ -115,12 +118,12 @@
     var totalPages = Math.ceil(total / perPage);
     if (totalPages <= 1) { document.getElementById('pagination').innerHTML = ''; return; }
     var phtml = '';
-    if (page > 1) phtml += '<a href="#" data-page="' + (page-1) + '">قبلی</a>';
+    if (page > 1) phtml += '<a href="#" data-page="' + (page-1) + '">‹ قبلی</a>';
     for (var i = 1; i <= totalPages; i++) {
       if (i === page) phtml += '<span class="current">' + i + '</span>';
       else phtml += '<a href="#" data-page="' + i + '">' + i + '</a>';
     }
-    if (page < totalPages) phtml += '<a href="#" data-page="' + (page+1) + '">بعدی</a>';
+    if (page < totalPages) phtml += '<a href="#" data-page="' + (page+1) + '">بعدی ›</a>';
     document.getElementById('pagination').innerHTML = phtml;
     document.getElementById('pagination').querySelectorAll('a[data-page]').forEach(function(a) {
       a.addEventListener('click', function(e) { e.preventDefault(); currentPage = parseInt(this.dataset.page); loadJobs(); });
