@@ -10,3 +10,4 @@ downloads/
 rubika_session.rp
 *.egg-info/
 .coverage
+test.db
