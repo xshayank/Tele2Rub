@@ -11,7 +11,6 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-import io
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -55,6 +54,17 @@ def _make_process(*, output_lines: list[str], returncode: int) -> MagicMock:
     proc.returncode = returncode
     proc.wait.return_value = None
     return proc
+
+
+def _make_capture_popen(procs: list[MagicMock]) -> tuple[list[list[str]], Any]:
+    """Return (calls_list, side_effect) that records each Popen call and returns procs in order."""
+    calls: list[list[str]] = []
+
+    def _side_effect(call_cmd, **kwargs):  # type: ignore[override]
+        calls.append(list(call_cmd))
+        return procs[len(calls) - 1]
+
+    return calls, _side_effect
 
 
 # ---------------------------------------------------------------------------
@@ -114,13 +124,9 @@ def test_retry_uses_video_fallback_format() -> None:
     loop = _make_event_loop()
     try:
         cmd = ["yt-dlp", "--format", "bv*+ba/b", "url"]
-        popen_calls: list[list[str]] = []
+        popen_calls, side_effect = _make_capture_popen([first_proc, second_proc])
 
-        def capture_popen(call_cmd, **kwargs):  # type: ignore[override]
-            popen_calls.append(list(call_cmd))
-            return [first_proc, second_proc][len(popen_calls) - 1]
-
-        with patch("subprocess.Popen", side_effect=capture_popen):
+        with patch("subprocess.Popen", side_effect=side_effect):
             _run_ytdlp_subprocess(cmd, _JOB_ID, loop, _noop_progress, _is_audio=False)
 
         assert len(popen_calls) == 2
@@ -142,13 +148,9 @@ def test_retry_uses_audio_fallback_format() -> None:
     loop = _make_event_loop()
     try:
         cmd = ["yt-dlp", "--format", "bestaudio/best", "url"]
-        popen_calls: list[list[str]] = []
+        popen_calls, side_effect = _make_capture_popen([first_proc, second_proc])
 
-        def capture_popen(call_cmd, **kwargs):  # type: ignore[override]
-            popen_calls.append(list(call_cmd))
-            return [first_proc, second_proc][len(popen_calls) - 1]
-
-        with patch("subprocess.Popen", side_effect=capture_popen):
+        with patch("subprocess.Popen", side_effect=side_effect):
             _run_ytdlp_subprocess(cmd, _JOB_ID, loop, _noop_progress, _is_audio=True)
 
         assert len(popen_calls) == 2
@@ -169,14 +171,10 @@ def test_no_retry_on_unrelated_error() -> None:
     loop = _make_event_loop()
     try:
         cmd = ["yt-dlp", "--format", "bv*+ba/b", "url"]
-        popen_calls: list[Any] = []
-
-        def capture_popen(call_cmd, **kwargs):  # type: ignore[override]
-            popen_calls.append(call_cmd)
-            return only_proc
+        popen_calls, side_effect = _make_capture_popen([only_proc])
 
         with pytest.raises(RuntimeError, match="non-zero status"):
-            with patch("subprocess.Popen", side_effect=capture_popen):
+            with patch("subprocess.Popen", side_effect=side_effect):
                 _run_ytdlp_subprocess(cmd, _JOB_ID, loop, _noop_progress, _is_audio=False)
 
         # Exactly one Popen call — no retry
@@ -293,13 +291,9 @@ def test_progressive_fallback_on_two_format_failures() -> None:
     loop = _make_event_loop()
     try:
         cmd = ["yt-dlp", "--format", "bv*[height<=1080]+ba/b[height<=1080]/b", "url"]
-        popen_calls: list[list[str]] = []
+        popen_calls, side_effect = _make_capture_popen([first_proc, second_proc, third_proc])
 
-        def capture_popen(call_cmd, **kwargs):  # type: ignore[override]
-            popen_calls.append(list(call_cmd))
-            return [first_proc, second_proc, third_proc][len(popen_calls) - 1]
-
-        with patch("subprocess.Popen", side_effect=capture_popen):
+        with patch("subprocess.Popen", side_effect=side_effect):
             # Should succeed without raising
             _run_ytdlp_subprocess(cmd, _JOB_ID, loop, _noop_progress, _is_audio=False)
 
@@ -323,13 +317,9 @@ def test_progressive_fallback_uses_progressive_format() -> None:
     loop = _make_event_loop()
     try:
         cmd = ["yt-dlp", "--format", "bv*+ba/b", "url"]
-        popen_calls: list[list[str]] = []
+        popen_calls, side_effect = _make_capture_popen([first_proc, second_proc, third_proc])
 
-        def capture_popen(call_cmd, **kwargs):  # type: ignore[override]
-            popen_calls.append(list(call_cmd))
-            return [first_proc, second_proc, third_proc][len(popen_calls) - 1]
-
-        with patch("subprocess.Popen", side_effect=capture_popen):
+        with patch("subprocess.Popen", side_effect=side_effect):
             _run_ytdlp_subprocess(cmd, _JOB_ID, loop, _noop_progress, _is_audio=False)
 
         assert len(popen_calls) == 3
@@ -372,21 +362,17 @@ def test_no_progressive_fallback_for_audio() -> None:
         returncode=1,
     )
     second_proc = _make_process(
-        output_lines=[f"ERROR: retry also failed"],
+        output_lines=["ERROR: retry also failed"],
         returncode=1,
     )
 
     loop = _make_event_loop()
     try:
         cmd = ["yt-dlp", "--format", "bestaudio/best", "url"]
-        popen_calls: list[list[str]] = []
-
-        def capture_popen(call_cmd, **kwargs):  # type: ignore[override]
-            popen_calls.append(list(call_cmd))
-            return [first_proc, second_proc][len(popen_calls) - 1]
+        popen_calls, side_effect = _make_capture_popen([first_proc, second_proc])
 
         with pytest.raises(RuntimeError, match="format fallback retry"):
-            with patch("subprocess.Popen", side_effect=capture_popen):
+            with patch("subprocess.Popen", side_effect=side_effect):
                 _run_ytdlp_subprocess(cmd, _JOB_ID, loop, _noop_progress, _is_audio=True)
 
         # Exactly two attempts — no progressive third attempt for audio

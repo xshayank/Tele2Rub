@@ -157,6 +157,35 @@ def _build_command(
     return cmd
 
 
+def _run_progressive_fallback(
+    cmd: list[str],
+    loop: asyncio.AbstractEventLoop,
+    progress_coro_factory,
+    job_id: str,
+    stderr_tail_first: str,
+    stderr_tail_retry: str,
+) -> None:
+    """Attempt a final progressive-format download and raise on failure.
+
+    Used as a last resort for video downloads when both the primary selector
+    and the ``bv*+ba/b`` retry have failed with "Requested format is not available".
+    Tries ``_PROGRESSIVE_FALLBACK_FORMAT`` (``18/22/b``) which targets common
+    progressive mp4 formats that are available on virtually all YouTube videos.
+    """
+    logger.info({"event": "youtube.retry_progressive", "job_id": job_id})
+    prog_cmd = _replace_format_arg(cmd, _PROGRESSIVE_FALLBACK_FORMAT)
+    logger.debug({"event": "youtube.subprocess_cmd_progressive", "cmd": prog_cmd})
+    prog_output = _exec_ytdlp(prog_cmd, loop, progress_coro_factory)
+    if prog_output is not None:
+        stderr_tail_prog = "\n".join(prog_output[-20:])
+        raise RuntimeError(
+            f"yt-dlp failed even after progressive format fallback.\n"
+            f"--- first attempt ---\n{stderr_tail_first}\n"
+            f"--- retry attempt ---\n{stderr_tail_retry}\n"
+            f"--- progressive attempt ---\n{stderr_tail_prog}"
+        )
+
+
 def _run_ytdlp_subprocess(
     cmd: list[str],
     job_id: str,
@@ -188,18 +217,10 @@ def _run_ytdlp_subprocess(
                 stderr_tail_retry = "\n".join(retry_output[-20:])
                 # For video: try progressive formats as a last resort
                 if not _is_audio and _FORMAT_NOT_AVAILABLE_MSG in stderr_tail_retry:
-                    logger.info({"event": "youtube.retry_progressive", "job_id": job_id})
-                    prog_cmd = _replace_format_arg(cmd, _PROGRESSIVE_FALLBACK_FORMAT)
-                    logger.debug({"event": "youtube.subprocess_cmd_progressive", "cmd": prog_cmd})
-                    prog_output = _exec_ytdlp(prog_cmd, loop, progress_coro_factory)
-                    if prog_output is not None:
-                        stderr_tail_prog = "\n".join(prog_output[-20:])
-                        raise RuntimeError(
-                            f"yt-dlp failed even after progressive format fallback.\n"
-                            f"--- first attempt ---\n{stderr_tail_first}\n"
-                            f"--- retry attempt ---\n{stderr_tail_retry}\n"
-                            f"--- progressive attempt ---\n{stderr_tail_prog}"
-                        )
+                    _run_progressive_fallback(
+                        cmd, loop, progress_coro_factory,
+                        job_id, stderr_tail_first, stderr_tail_retry,
+                    )
                 else:
                     raise RuntimeError(
                         f"yt-dlp failed even after format fallback retry.\n"
