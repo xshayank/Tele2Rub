@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from kharej.contracts import S2ObjectRef, make_media_key, make_thumb_key
-from kharej.downloaders.common import safe_filename
+from kharej.downloaders.common import resolve_cookies_path, safe_filename
 
 if TYPE_CHECKING:
     from kharej.dispatcher import Job
@@ -85,13 +85,14 @@ class QobuzDownloader:
             }
         )
 
-        ytdlp_bin: str = "yt-dlp"
+        ytdlp_bin: str = settings.get("ytdlp_bin") or "yt-dlp"
+        cookies_path: str | None = resolve_cookies_path(settings)
 
         with tempfile.TemporaryDirectory(prefix=f"kharej_qobuz_{job.job_id}_") as tmp_str:
             tmp_dir = Path(tmp_str)
 
             logger.info({"event": "qobuz.download_start", "job_id": job.job_id})
-            audio_path: Path = await _spodl.download_track(info, tmp_dir, ytdlp_bin)
+            audio_path: Path = await _spodl.download_track(info, tmp_dir, ytdlp_bin, cookies_path=cookies_path)
 
             await progress.report_progress(job.job_id, 90, phase="uploading")
 

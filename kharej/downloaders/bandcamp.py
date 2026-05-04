@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from kharej.contracts import S2ObjectRef, make_media_key
-from kharej.downloaders.common import safe_filename
+from kharej.downloaders.common import resolve_cookies_path, safe_filename
 
 if TYPE_CHECKING:
     from kharej.dispatcher import Job
@@ -66,6 +66,7 @@ class BandcampDownloader:
         await progress.report_progress(job.job_id, 0, phase="downloading")
 
         ytdlp_bin: str = settings.get("ytdlp_bin") or "yt-dlp"
+        cookies_path: str | None = resolve_cookies_path(settings)
 
         with tempfile.TemporaryDirectory(prefix=f"kharej_bc_{job.job_id}_") as tmp_str:
             tmp_dir = Path(tmp_str)
@@ -76,6 +77,7 @@ class BandcampDownloader:
                 download_dir=tmp_dir,
                 ytdlp_bin=ytdlp_bin,
                 safe_name=safe_name,
+                cookies_path=cookies_path,
             )
 
             await progress.report_progress(job.job_id, 90, phase="uploading")

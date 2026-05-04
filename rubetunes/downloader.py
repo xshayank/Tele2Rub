@@ -203,6 +203,13 @@ def _safe_name(info: dict) -> str:
     return _safe_filename(base)
 
 
+def _cookies_args(cookies_path: str | None) -> list[str]:
+    """Return ``["--cookies", path]`` when *cookies_path* points to an existing file, else ``[]``."""
+    if cookies_path and Path(cookies_path).is_file():
+        return ["--cookies", cookies_path]
+    return []
+
+
 def _download_url_to_file(url: str, out_path: Path, *, timeout: int = 120) -> None:
     """Stream *url* into *out_path*."""
     with requests.get(
@@ -326,7 +333,7 @@ def _download_tidal_alt(info: dict, output_dir: Path) -> Path:
 
 # --- Deezer ---
 
-def _download_deezer(info: dict, quality: str, output_dir: Path, ytdlp_bin: str) -> Path:
+def _download_deezer(info: dict, quality: str, output_dir: Path, ytdlp_bin: str, cookies_path: str | None = None) -> Path:
     arl = os.getenv("DEEZER_ARL", "").strip()
     if not arl:
         raise DownloadError("deezer", "DEEZER_ARL env var not set")
@@ -348,8 +355,9 @@ def _download_deezer(info: dict, quality: str, output_dir: Path, ytdlp_bin: str)
         "-o", out_tmpl,
         "--no-playlist", "--quiet", "--no-warnings",
         "--print", "after_move:filepath",
-        deezer_url,
     ]
+    cmd += _cookies_args(cookies_path)
+    cmd.append(deezer_url)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise DownloadError("deezer", f"yt-dlp exit {result.returncode}: {result.stderr[:300]}")
@@ -371,7 +379,7 @@ def _download_deezer(info: dict, quality: str, output_dir: Path, ytdlp_bin: str)
 
 # --- Amazon ---
 
-def _download_amazon(info: dict, quality: str, output_dir: Path, ytdlp_bin: str) -> Path:
+def _download_amazon(info: dict, quality: str, output_dir: Path, ytdlp_bin: str, cookies_path: str | None = None) -> Path:
     from rubetunes.providers.amazon import (
         _get_amazon_stream_url, _convert_or_rename_amazon,
     )
@@ -404,8 +412,9 @@ def _download_amazon(info: dict, quality: str, output_dir: Path, ytdlp_bin: str)
         "-o", out_tmpl,
         "--no-playlist", "--quiet", "--no-warnings",
         "--print", "after_move:filepath",
-        amazon_url,
     ]
+    cmd += _cookies_args(cookies_path)
+    cmd.append(amazon_url)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         raise DownloadError("amazon", f"yt-dlp exit {result.returncode}: {result.stderr[:300]}")
@@ -426,7 +435,7 @@ def _download_amazon(info: dict, quality: str, output_dir: Path, ytdlp_bin: str)
 
 # --- YouTube Music ---
 
-def _download_youtube_music(info: dict, output_dir: Path, ytdlp_bin: str) -> Path:
+def _download_youtube_music(info: dict, output_dir: Path, ytdlp_bin: str, cookies_path: str | None = None) -> Path:
     from rubetunes.providers.youtube import (
         _get_youtube_music_url_by_isrc, _download_youtube_music as _yt_dl,
     )
@@ -437,14 +446,14 @@ def _download_youtube_music(info: dict, output_dir: Path, ytdlp_bin: str) -> Pat
 
     query_or_url: str | None = None
     if isrc:
-        query_or_url = _get_youtube_music_url_by_isrc(isrc, title, artist, ytdlp_bin)
+        query_or_url = _get_youtube_music_url_by_isrc(isrc, title, artist, ytdlp_bin, cookies_path=cookies_path)
     if not query_or_url:
         if title:
             query_or_url = f"{title} {artist}".strip()
         else:
             raise DownloadError("youtube", "No ISRC or title to search YouTube Music")
 
-    return _yt_dl(query_or_url, output_dir, ytdlp_bin, info=info)
+    return _yt_dl(query_or_url, output_dir, ytdlp_bin, info=info, cookies_path=cookies_path)
 
 
 # --- Monochrome (Tidal proxy) ---
@@ -529,7 +538,7 @@ def _download_musicdl(info: dict, output_dir: Path) -> Path:
 # Waterfall helper
 # ---------------------------------------------------------------------------
 
-def _do_waterfall(info: dict, output_dir: Path, ytdlp_bin: str) -> Path:
+def _do_waterfall(info: dict, output_dir: Path, ytdlp_bin: str, cookies_path: str | None = None) -> Path:
     """Try all available sources in priority order."""
     choices = build_platform_choices(info, "any")
     providers = [c for c in choices if c["source"] != "auto"]
@@ -538,7 +547,7 @@ def _do_waterfall(info: dict, output_dir: Path, ytdlp_bin: str) -> Path:
     for choice in providers:
         src = choice["source"]
         try:
-            fp = _download_by_source(info, choice, output_dir, ytdlp_bin)
+            fp = _download_by_source(info, choice, output_dir, ytdlp_bin, cookies_path=cookies_path)
             # Record success
             try:
                 from rubetunes.circuit_breaker import _record_provider_outcome
@@ -561,7 +570,7 @@ def _do_waterfall(info: dict, output_dir: Path, ytdlp_bin: str) -> Path:
     raise DownloadError("waterfall", f"All sources failed — last: {last_exc}")
 
 
-def _download_by_source(info: dict, choice: dict, output_dir: Path, ytdlp_bin: str) -> Path:
+def _download_by_source(info: dict, choice: dict, output_dir: Path, ytdlp_bin: str, cookies_path: str | None = None) -> Path:
     """Dispatch to the correct provider download function."""
     src     = choice["source"]
     quality = choice.get("quality", "mp3")
@@ -570,11 +579,11 @@ def _download_by_source(info: dict, choice: dict, output_dir: Path, ytdlp_bin: s
     if src == "tidal_alt":
         return _download_tidal_alt(info, output_dir)
     if src == "deezer":
-        return _download_deezer(info, quality, output_dir, ytdlp_bin)
+        return _download_deezer(info, quality, output_dir, ytdlp_bin, cookies_path=cookies_path)
     if src == "amazon":
-        return _download_amazon(info, quality, output_dir, ytdlp_bin)
+        return _download_amazon(info, quality, output_dir, ytdlp_bin, cookies_path=cookies_path)
     if src == "youtube":
-        return _download_youtube_music(info, output_dir, ytdlp_bin)
+        return _download_youtube_music(info, output_dir, ytdlp_bin, cookies_path=cookies_path)
     if src == "monochrome":
         return _download_monochrome(info, quality, output_dir)
     if src == "musicdl":
@@ -591,6 +600,7 @@ async def download_track_from_choice(
     choice: dict,
     output_dir: "str | Path" = ".",
     ytdlp_bin: str = "yt-dlp",
+    cookies_path: str | None = None,
 ) -> Path:
     """Download a track from *choice* (produced by ``build_platform_choices``).
 
@@ -629,11 +639,11 @@ async def download_track_from_choice(
         if src == "auto":
             # (3) Auto waterfall
             fp = await loop.run_in_executor(
-                None, _do_waterfall, info, out_dir, ytdlp_bin
+                None, _do_waterfall, info, out_dir, ytdlp_bin, cookies_path
             )
         else:
             fp = await loop.run_in_executor(
-                None, _download_by_source, info, choice, out_dir, ytdlp_bin
+                None, _download_by_source, info, choice, out_dir, ytdlp_bin, cookies_path
             )
     except DownloadError:
         # (6) Report to circuit breaker
@@ -705,6 +715,7 @@ async def download_track(
     info: dict,
     output_dir: "str | Path" = ".",
     ytdlp_bin: str = "yt-dlp",
+    cookies_path: str | None = None,
 ) -> Path:
     """Auto-waterfall entry point: Qobuz → Tidal Alt → Deezer → YouTube Music.
 
@@ -714,4 +725,4 @@ async def download_track(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _do_waterfall, info, out_dir, ytdlp_bin)
+    return await loop.run_in_executor(None, _do_waterfall, info, out_dir, ytdlp_bin, cookies_path)

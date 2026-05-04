@@ -38,6 +38,7 @@ def _get_youtube_music_url_by_isrc(
     title: str = "",
     artist: str = "",
     ytdlp_bin: str = "yt-dlp",
+    cookies_path: str | None = None,
 ) -> str | None:
     """Return a YouTube Music URL for the track identified by *isrc*.
 
@@ -55,13 +56,13 @@ def _get_youtube_music_url_by_isrc(
         queries.append(q)
 
     for query in queries:
-        url = _ytdlp_search(query, ytdlp_bin)
+        url = _ytdlp_search(query, ytdlp_bin, cookies_path=cookies_path)
         if url:
             return url
     return None
 
 
-def _ytdlp_search(query: str, ytdlp_bin: str) -> str | None:
+def _ytdlp_search(query: str, ytdlp_bin: str, cookies_path: str | None = None) -> str | None:
     """Run a yt-dlp --default-search query and return the first result URL."""
     try:
         cmd = [
@@ -72,10 +73,15 @@ def _ytdlp_search(query: str, ytdlp_bin: str) -> str | None:
             "--no-warnings",
             "--no-playlist",
         ]
-        cookies = _find_cookies_file()
-        if cookies:
-            cmd += ["--cookies", str(cookies)]
-            log.debug("using cookies file: %s", cookies)
+        # Prefer explicitly provided cookies_path; fall back to auto-discovery.
+        effective_cookies: Path | str | None = None
+        if cookies_path and Path(cookies_path).is_file():
+            effective_cookies = cookies_path
+        else:
+            effective_cookies = _find_cookies_file()
+        if effective_cookies:
+            cmd += ["--cookies", str(effective_cookies)]
+            log.debug("using cookies file: %s", effective_cookies)
         cmd.append(query)
         result = subprocess.run(
             cmd,
@@ -98,6 +104,7 @@ def _download_youtube_music(
     ytdlp_bin: str,
     *,
     info: dict | None = None,
+    cookies_path: str | None = None,
 ) -> Path:
     """Download the best audio from YouTube Music and convert to MP3 V0.
 
@@ -131,10 +138,15 @@ def _download_youtube_music(
         "--no-warnings",
         "--print", "after_move:filepath",
     ]
-    cookies = _find_cookies_file()
-    if cookies:
-        cmd += ["--cookies", str(cookies)]
-        log.debug("using cookies file: %s", cookies)
+    # Prefer explicitly provided cookies_path; fall back to auto-discovery.
+    effective_cookies: Path | str | None = None
+    if cookies_path and Path(cookies_path).is_file():
+        effective_cookies = cookies_path
+    else:
+        effective_cookies = _find_cookies_file()
+    if effective_cookies:
+        cmd += ["--cookies", str(effective_cookies)]
+        log.debug("using cookies file: %s", effective_cookies)
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
     if result.returncode != 0:

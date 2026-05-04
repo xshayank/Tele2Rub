@@ -131,7 +131,7 @@ def _make_spodl_mock(
     }
     setattr(mod, info_fn_name, MagicMock(return_value=info))
 
-    async def _fake_download_track(track_info, output_dir, ytdlp_bin):
+    async def _fake_download_track(track_info, output_dir, ytdlp_bin, *, cookies_path=None):
         dest = Path(output_dir) / f"{artists[0]}_-_{title}.flac"
         dest.write_bytes(b"\x00" * 256)
         return dest
@@ -490,7 +490,7 @@ class TestSoundcloudDownloader:
         settings = _make_settings()
 
         # Fake download_soundcloud: writes a .mp3 file and returns it
-        async def _fake_download(url, download_dir, ytdlp_bin, safe_name="soundcloud_track"):
+        async def _fake_download(url, download_dir, ytdlp_bin, safe_name="soundcloud_track", cookies_path=None):
             dest = Path(download_dir) / f"{safe_name}.mp3"
             dest.write_bytes(b"\xff\xfb" * 128)
             return dest
@@ -539,7 +539,7 @@ class TestSoundcloudDownloader:
         )
         progress = _make_progress()
 
-        async def _fake_download(url, download_dir, ytdlp_bin, safe_name="soundcloud_track"):
+        async def _fake_download(url, download_dir, ytdlp_bin, safe_name="soundcloud_track", cookies_path=None):
             dest = Path(download_dir) / f"{safe_name}.mp3"
             dest.write_bytes(b"\x00" * 64)
             return dest
@@ -575,7 +575,7 @@ class TestBandcampDownloader:
         progress = _make_progress()
         settings = _make_settings()
 
-        async def _fake_download(url, download_dir, ytdlp_bin, safe_name="bandcamp_track"):
+        async def _fake_download(url, download_dir, ytdlp_bin, safe_name="bandcamp_track", cookies_path=None):
             dest = Path(download_dir) / f"{safe_name}.flac"
             dest.write_bytes(b"\x00" * 256)
             return dest
@@ -624,7 +624,7 @@ class TestBandcampDownloader:
         )
         progress = _make_progress()
 
-        async def _fake_download(url, download_dir, ytdlp_bin, safe_name="bandcamp_track"):
+        async def _fake_download(url, download_dir, ytdlp_bin, safe_name="bandcamp_track", cookies_path=None):
             dest = Path(download_dir) / f"{safe_name}.flac"
             dest.write_bytes(b"\x00" * 64)
             return dest
