@@ -35,12 +35,34 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.25rem;
     }
     .nav-brand { font-weight: 700; font-size: 1.25rem; color: var(--accent); }
-    .nav-links { display: flex; gap: 1rem; list-style: none; }
+    .nav-links { display: flex; gap: 1rem; list-style: none; align-items: center; }
     .nav-links a { color: var(--muted); font-size: 0.9rem; }
     .nav-links a:hover { color: var(--text); text-decoration: none; }
+    .nav-toggle {
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      gap: 5px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0.4rem;
+      border-radius: 0.3rem;
+    }
+    .nav-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .nav-toggle span {
+      display: block;
+      width: 20px;
+      height: 2px;
+      background: var(--text);
+      border-radius: 1px;
+    }
     main { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -65,7 +87,11 @@
       direction: ltr;
       text-align: left;
     }
-    input:focus, select:focus { outline: none; border-color: var(--accent); }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+    input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
     button, .btn {
       cursor: pointer;
       padding: 0.6rem 1.2rem;
@@ -74,6 +100,10 @@
       font-family: inherit;
       font-size: 0.95rem;
       font-weight: 500;
+    }
+    button:focus-visible, .btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }
     .btn-primary { background: var(--accent); color: #0f172a; }
     .btn-primary:hover { opacity: 0.9; }
@@ -136,13 +166,43 @@
     }
     .pagination a:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
     .pagination .current { border-color: var(--accent); color: var(--accent); }
+    /* ── Mobile responsive ───────────────────────────────────────── */
+    @media (max-width: 640px) {
+      nav { padding: 0.6rem 1rem; }
+      .nav-toggle { display: flex; }
+      .nav-links {
+        display: none;
+        width: 100%;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0;
+        padding: 0.5rem 0;
+        border-top: 1px solid var(--border);
+        margin-top: 0.4rem;
+      }
+      .nav-links.open { display: flex; }
+      .nav-links li { width: 100%; }
+      .nav-links a {
+        display: block;
+        padding: 0.5rem 0.25rem;
+        color: var(--text);
+        font-size: 0.95rem;
+      }
+      main { margin: 1rem auto; padding: 0 0.75rem; }
+      .card { padding: 1rem; }
+      h1 { font-size: 1.4rem; }
+      h2 { font-size: 1.15rem; }
+    }
   </style>
   {% block head %}{% endblock %}
 </head>
 <body>
   <nav>
     <span class="nav-brand">🎵 RubeTunes</span>
-    <ul class="nav-links">
+    <button class="nav-toggle" id="nav-toggle" aria-label="منو" aria-expanded="false" aria-controls="nav-links">
+      <span></span><span></span><span></span>
+    </button>
+    <ul class="nav-links" id="nav-links">
       <li><a href="/">دانلود جدید</a></li>
       <li><a href="/search">🔍 جستجو</a></li>
       <li><a href="/library">کتابخانه</a></li>
@@ -225,6 +285,16 @@
           if (t) fetch('/auth/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + t }, credentials: 'include' });
           clearToken();
           window.location.href = '/login';
+        });
+      }
+
+      // Mobile nav toggle
+      var navToggle = document.getElementById('nav-toggle');
+      var navLinks = document.getElementById('nav-links');
+      if (navToggle && navLinks) {
+        navToggle.addEventListener('click', function () {
+          var open = navLinks.classList.toggle('open');
+          navToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
         });
       }
     })();

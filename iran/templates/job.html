@@ -56,6 +56,10 @@
   var downloadList = document.getElementById('download-list');
   var cancelBtn = document.getElementById('cancel-btn');
 
+  var _isTerminal = false;
+  var _sseActive = false;
+  var _pollTimer = null;
+
   var statusLabels = {
     'pending': 'در انتظار', 'accepted': 'پذیرفته شد',
     'running': 'در حال اجرا', 'completed': 'تکمیل شد',
@@ -165,17 +169,22 @@
       if (!data) return;
       applyUpdate(data);
       if (data.status === 'completed') {
+        _isTerminal = true;
         // Fetch download parts
         window.authFetch('/jobs/' + JOB_ID + '/download')
           .then(function(r) { return r.json(); })
           .then(function(d) { if (d.parts) renderDownloads(d.parts); });
         return; // No SSE needed
       }
-      if (data.status === 'failed' || data.status === 'cancelled') return;
+      if (data.status === 'failed' || data.status === 'cancelled') {
+        _isTerminal = true;
+        return;
+      }
       startSSE();
     });
 
   function startSSE() {
+    _sseActive = true;
     var url = '/jobs/' + JOB_ID + '/events';
     var es = new EventSource(url + '?token=' + encodeURIComponent(window.getToken()));
     es.onmessage = function(e) {
@@ -183,17 +192,82 @@
         var data = JSON.parse(e.data);
         applyUpdate(data);
         if (data.type === 'job.completed') {
+          _isTerminal = true;
+          _sseActive = false;
           es.close();
           // Fetch download list
           window.authFetch('/jobs/' + JOB_ID + '/download')
             .then(function(r) { return r.json(); })
             .then(function(d) { if (d.parts) renderDownloads(d.parts); });
         }
-        if (data.type === 'job.failed' || data.type === 'job.cancelled') { es.close(); }
+        if (data.type === 'job.failed' || data.type === 'job.cancelled') {
+          _isTerminal = true;
+          _sseActive = false;
+          es.close();
+        }
       } catch (_) {}
     };
-    es.onerror = function() { es.close(); };
+    es.onerror = function() {
+      _sseActive = false;
+      es.close();
+      // Fall back to polling when SSE is unavailable
+      if (!_isTerminal) scheduleNextPoll();
+    };
   }
+
+  // ── Polling fallback (used when SSE fails) ───────────────────────
+  function scheduleNextPoll() {
+    if (_isTerminal || _sseActive) return;
+    _pollTimer = setTimeout(doPoll, 5000);
+  }
+
+  async function doPoll() {
+    _pollTimer = null;
+    if (_isTerminal || _sseActive) return;
+    try {
+      var r = await window.authFetch('/jobs/' + JOB_ID);
+      if (r.status === 403 || r.status === 404) {
+        _isTerminal = true;
+        window.location.href = '/library';
+        return;
+      }
+      var data = await r.json();
+      // Clear any transient error notice on success
+      var notice = document.getElementById('refresh-notice');
+      if (notice) notice.remove();
+      applyUpdate(data);
+      if (data.status === 'completed') {
+        _isTerminal = true;
+        window.authFetch('/jobs/' + JOB_ID + '/download')
+          .then(function(r2) { return r2.json(); })
+          .then(function(d) { if (d.parts) renderDownloads(d.parts); });
+        return;
+      }
+      if (data.status === 'failed' || data.status === 'cancelled') {
+        _isTerminal = true;
+        return;
+      }
+    } catch (_ex) {
+      if (!document.getElementById('refresh-notice')) {
+        var div = document.createElement('div');
+        div.id = 'refresh-notice';
+        div.className = 'alert alert-info';
+        div.style.marginTop = '0.5rem';
+        div.textContent = 'خطا در بروزرسانی وضعیت، دوباره تلاش می‌شود…';
+        errorBox.appendChild(div);
+      }
+    }
+    scheduleNextPoll();
+  }
+
+  // Pause polling while tab is hidden; resume when visible again
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+      if (_pollTimer !== null) { clearTimeout(_pollTimer); _pollTimer = null; }
+    } else {
+      if (!_isTerminal && !_sseActive && _pollTimer === null) scheduleNextPoll();
+    }
+  });
 
   async function doDownload(jobId, part) {
     var r = await window.authFetch('/jobs/' + jobId + '/download?part=' + part + '&url=1');
