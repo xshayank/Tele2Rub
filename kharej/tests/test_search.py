@@ -79,7 +79,7 @@ async def test_youtube_search_no_date_returns_none() -> None:
         def __init__(self, opts): pass
         def __enter__(self): return self
         def __exit__(self, *a): pass
-        def extract_info(self, url, download=False): return fake_info
+        def extract_info(self, url, download=False, **kwargs): return fake_info
 
     with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
         from importlib import reload
@@ -142,7 +142,7 @@ async def test_youtube_search_uploads_thumbnail_to_s3() -> None:
         def __init__(self, opts): pass
         def __enter__(self): return self
         def __exit__(self, *a): pass
-        def extract_info(self, url, download=False): return fake_info
+        def extract_info(self, url, download=False, **kwargs): return fake_info
 
     fake_s2 = MagicMock()
     fake_s2.head_object = MagicMock(return_value=None)  # not cached
@@ -179,7 +179,7 @@ async def test_youtube_search_resolves_missing_date_via_full_fetch() -> None:
         def __init__(self, opts): pass
         def __enter__(self): return self
         def __exit__(self, *a): pass
-        def extract_info(self, url, download=False):
+        def extract_info(self, url, download=False, **kwargs):
             call_count[0] += 1
             if "ytsearch" in url:
                 return {"entries": [flat_entry]}
@@ -214,7 +214,7 @@ async def test_youtube_search_full_fetch_failure_falls_back_to_none() -> None:
         def __init__(self, opts): pass
         def __enter__(self): return self
         def __exit__(self, *a): pass
-        def extract_info(self, url, download=False):
+        def extract_info(self, url, download=False, **kwargs):
             if "ytsearch" in url:
                 return {"entries": [flat_entry]}
             raise RuntimeError("Full fetch failed")
@@ -306,7 +306,7 @@ async def test_youtube_search_stage_b_uses_cookies() -> None:
         def __enter__(self): return self
         def __exit__(self, *a): pass
 
-        def extract_info(self, url, download=False):
+        def extract_info(self, url, download=False, **kwargs):
             if "ytsearch" in url:
                 return {"entries": [flat_entry]}
             return {"upload_date": "20240101", "timestamp": 1704067200}
@@ -348,7 +348,7 @@ async def test_youtube_search_stage_b_logs_failure(caplog: pytest.LogCaptureFixt
         def __enter__(self): return self
         def __exit__(self, *a): pass
 
-        def extract_info(self, url, download=False):
+        def extract_info(self, url, download=False, **kwargs):
             if "ytsearch" in url:
                 return {"entries": [flat_entry]}
             raise RuntimeError("bot check")
@@ -372,6 +372,89 @@ async def test_youtube_search_stage_b_logs_failure(caplog: pytest.LogCaptureFixt
         "vid005" in r.getMessage() and "bot check" in r.getMessage()
         for r in warning_records
     ), f"Expected warning with video_id and error; got: {[r.getMessage() for r in warning_records]}"
+
+
+@pytest.mark.asyncio
+async def test_youtube_search_stage_b_uses_process_false() -> None:
+    """Stage B: extract_info is called with process=False for per-video metadata fetch."""
+    flat_entry = {
+        "id": "vid006",
+        "title": "Process False Test",
+        "uploader": "Channel",
+        "duration": 60,
+        # no upload_date — triggers Stage B
+    }
+
+    stage_b_kwargs: list[dict] = []
+
+    class FakeYDL:
+        def __init__(self, opts): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+        def extract_info(self, url, download=False, **kwargs):
+            if "ytsearch" in url:
+                return {"entries": [flat_entry]}
+            stage_b_kwargs.append({"download": download, **kwargs})
+            return {"upload_date": "20260408", "timestamp": 1775683389}
+
+    with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+        from importlib import reload
+        import kharej.searchers.youtube as yt_mod
+        reload(yt_mod)
+        results = await yt_mod.youtube_search("process false test", limit=1)
+
+    assert len(results) == 1
+    assert results[0]["upload_date"] == "2026-04-08"
+    assert stage_b_kwargs, "Stage B extract_info was not called"
+    assert stage_b_kwargs[0].get("process") is False, (
+        f"Expected process=False in Stage B extract_info call; got: {stage_b_kwargs[0]}"
+    )
+    assert stage_b_kwargs[0].get("download") is False
+
+
+@pytest.mark.asyncio
+async def test_youtube_search_stage_b_ydl_opts_disable_format_check() -> None:
+    """Stage B: ydl_opts passed to YoutubeDL has check_formats=False and ignore_no_formats_error=True."""
+    flat_entry = {
+        "id": "vid007",
+        "title": "Format Check Test",
+        "uploader": "Channel",
+        "duration": 45,
+        # no upload_date — triggers Stage B
+    }
+
+    captured_opts: list[dict] = []
+
+    class FakeYDL:
+        def __init__(self, opts):
+            captured_opts.append(dict(opts))
+
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+        def extract_info(self, url, download=False, **kwargs):
+            if "ytsearch" in url:
+                return {"entries": [flat_entry]}
+            return {"upload_date": "20260408", "timestamp": 1775683389}
+
+    with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+        from importlib import reload
+        import kharej.searchers.youtube as yt_mod
+        reload(yt_mod)
+        results = await yt_mod.youtube_search("format check test", limit=1)
+
+    assert len(results) == 1
+    # At least two YDL instances: Stage A (flat search) and Stage B (per-video)
+    assert len(captured_opts) >= 2, "Expected at least two YDL instantiations"
+    stage_b_opts = [o for o in captured_opts if not o.get("extract_flat")]
+    assert stage_b_opts, "No Stage B YDL call found"
+    assert stage_b_opts[0].get("check_formats") is False, (
+        f"Expected check_formats=False in Stage B opts; got: {stage_b_opts[0]}"
+    )
+    assert stage_b_opts[0].get("ignore_no_formats_error") is True, (
+        f"Expected ignore_no_formats_error=True in Stage B opts; got: {stage_b_opts[0]}"
+    )
 
 
 @pytest.mark.asyncio

@@ -62,12 +62,14 @@ def _fetch_video_date(video_id: str) -> tuple[str | None, int | None]:
         "no_warnings": True,
         "skip_download": True,
         "noplaylist": True,
+        "check_formats": False,
+        "ignore_no_formats_error": True,
     }
     if os.path.isfile(_COOKIES_PATH):
         ydl_opts["cookiefile"] = _COOKIES_PATH
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(url, download=False, process=False)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Stage B fetch failed for %s: %s", video_id, exc)
         return None, None
