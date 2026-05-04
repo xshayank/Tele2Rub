@@ -1,60 +1,64 @@
 {% extends "base.html" %}
 {% block title %}دانلود موسیقی — RubeTunes{% endblock %}
 {% block content %}
-<h1>دانلود موسیقی</h1>
+<h1 class="page-title">🎵 دانلود موسیقی</h1>
 
 <div class="card">
   <div id="msg"></div>
   <form id="submit-form">
     <div class="form-group">
       <label for="url">لینک آهنگ یا پلی‌لیست</label>
-      <input type="url" id="url" name="url" placeholder="https://open.spotify.com/track/..." required />
+      <input type="url" id="url" name="url" placeholder="https://open.spotify.com/track/..." required autocomplete="off" style="font-size:1rem; padding:0.8rem 1rem;" />
     </div>
-    <div class="form-group">
-      <label for="platform">پلتفرم</label>
-      <select id="platform" name="platform">
-        <option value="spotify">Spotify</option>
-        <option value="youtube">YouTube</option>
-        <option value="tidal">Tidal</option>
-        <option value="qobuz">Qobuz</option>
-        <option value="amazon">Amazon Music</option>
-        <option value="soundcloud">SoundCloud</option>
-        <option value="bandcamp">Bandcamp</option>
-        <option value="musicdl">musicdl</option>
-      </select>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="platform">پلتفرم</label>
+        <select id="platform" name="platform">
+          <option value="spotify">🎵 Spotify</option>
+          <option value="youtube">▶️ YouTube</option>
+          <option value="tidal">🌊 Tidal</option>
+          <option value="qobuz">🎼 Qobuz</option>
+          <option value="amazon">🛒 Amazon Music</option>
+          <option value="soundcloud">☁️ SoundCloud</option>
+          <option value="bandcamp">🏕️ Bandcamp</option>
+          <option value="musicdl">🔍 musicdl</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="quality">کیفیت صدا</label>
+        <select id="quality" name="quality">
+          <option value="mp3">MP3 (320kbps)</option>
+          <option value="flac">FLAC (CD Quality)</option>
+          <option value="hires">Hi-Res FLAC (24-bit)</option>
+        </select>
+      </div>
+      <!-- YouTube video quality — hidden unless YouTube selected -->
+      <div class="form-group" id="video-quality-group" style="display:none">
+        <label for="video-quality">کیفیت ویدیو</label>
+        <select id="video-quality" name="video-quality">
+          <option value="mp4-1080p">1080p (Full HD)</option>
+          <option value="mp4-720p">720p (HD)</option>
+          <option value="mp4-480p">480p (SD)</option>
+          <option value="mp4-360p">360p (Low)</option>
+          <option value="mp4">بهترین کیفیت</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="job_type">نوع دانلود</label>
+        <select id="job_type" name="job_type">
+          <option value="single">تک آهنگ / ویدیو</option>
+          <option value="batch">آلبوم / پلی‌لیست</option>
+        </select>
+      </div>
     </div>
-    <div class="form-group">
-      <label for="quality">کیفیت</label>
-      <select id="quality" name="quality">
-        <option value="mp3">MP3 (320kbps)</option>
-        <option value="flac">FLAC (CD Quality)</option>
-        <option value="hires">Hi-Res FLAC (24-bit)</option>
-      </select>
-    </div>
-    <!-- YouTube video quality row — hidden unless YouTube is selected -->
-    <div class="form-group" id="video-quality-group" style="display:none">
-      <label for="video-quality">کیفیت ویدیو</label>
-      <select id="video-quality" name="video-quality">
-        <option value="mp4-1080p">1080p (Full HD)</option>
-        <option value="mp4-720p">720p (HD)</option>
-        <option value="mp4-480p">480p (SD)</option>
-        <option value="mp4-360p">360p (Low)</option>
-        <option value="mp4">بهترین کیفیت</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label for="job_type">نوع دانلود</label>
-      <select id="job_type" name="job_type">
-        <option value="single">تک آهنگ / ویدیو</option>
-        <option value="batch">آلبوم / پلی‌لیست</option>
-      </select>
-    </div>
-    <button type="submit" class="btn btn-primary">ارسال درخواست</button>
+    <button type="submit" class="btn btn-primary btn-full-mobile" id="submit-btn" style="padding:0.75rem 2rem; font-size:1rem;">
+      ارسال درخواست
+    </button>
   </form>
 </div>
 
 <div class="card">
-  <h2>پلتفرم‌های پشتیبانی‌شده</h2>
+  <div class="section-label">پلتفرم‌های پشتیبانی‌شده</div>
   <div class="platform-grid">
     <span class="platform-chip">🎵 Spotify — تک آهنگ، آلبوم، پلی‌لیست</span>
     <span class="platform-chip">▶️ YouTube — ویدیو، پلی‌لیست</span>
@@ -110,6 +114,7 @@ document.getElementById('submit-form').addEventListener('submit', async function
   msg.innerHTML = '';
   var token = window.getToken();
   if (!token) { window.location.href = '/login'; return; }
+  var submitBtn = document.getElementById('submit-btn');
   var platform = document.getElementById('platform').value;
   var quality = platform === 'youtube'
     ? document.getElementById('video-quality').value
@@ -120,6 +125,8 @@ document.getElementById('submit-form').addEventListener('submit', async function
     quality: quality,
     job_type: document.getElementById('job_type').value
   };
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'در حال ارسال...';
   var resp = await window.authFetch('/jobs', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -131,6 +138,8 @@ document.getElementById('submit-form').addEventListener('submit', async function
   } else {
     var err = await resp.json();
     msg.innerHTML = '<div class="alert alert-error">' + (err.detail || 'خطا در ارسال درخواست') + '</div>';
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'ارسال درخواست';
   }
 });
 </script>

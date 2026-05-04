@@ -1,23 +1,28 @@
 {% extends "base.html" %}
 {% block title %}ورود — RubeTunes{% endblock %}
 {% block content %}
-<div style="max-width: 420px; margin: 4rem auto;">
-  <div class="card">
-    <h1>ورود به حساب</h1>
+<div style="max-width: 400px; margin: 3rem auto;">
+  <div style="text-align:center; margin-bottom:1.5rem;">
+    <div style="font-size:2.5rem; margin-bottom:0.5rem;">🎵</div>
+    <div style="font-size:1.4rem; font-weight:800; color:var(--accent);">RubeTunes</div>
+    <div style="font-size:0.85rem; color:var(--muted); margin-top:0.25rem;">ورود به حساب کاربری</div>
+  </div>
+  <div class="card" style="box-shadow:var(--shadow-md);">
     <div id="msg"></div>
     <form id="login-form">
       <div class="form-group">
         <label for="email">ایمیل</label>
-        <input type="email" id="email" name="email" placeholder="you@example.com" required />
+        <input type="email" id="email" name="email" placeholder="you@example.com" required autocomplete="email" />
       </div>
       <div class="form-group">
         <label for="password">رمز عبور</label>
-        <input type="password" id="password" name="password" placeholder="••••••••" required />
+        <input type="password" id="password" name="password" placeholder="••••••••" required autocomplete="current-password" />
       </div>
-      <button type="submit" class="btn btn-primary" style="width:100%">ورود</button>
+      <button type="submit" class="btn btn-primary" id="login-btn" style="width:100%; margin-top:0.25rem;">ورود</button>
     </form>
-    <p style="margin-top:1rem; font-size:0.9rem; color:var(--muted)">
-      حساب ندارید؟ <a href="/register">ثبت‌نام</a>
+    <hr class="divider" />
+    <p style="font-size:0.88rem; color:var(--muted); text-align:center;">
+      حساب ندارید؟ <a href="/register">ثبت‌نام کنید</a>
     </p>
   </div>
 </div>
@@ -27,7 +32,10 @@
 document.getElementById('login-form').addEventListener('submit', async function(e) {
   e.preventDefault();
   var msg = document.getElementById('msg');
+  var btn = document.getElementById('login-btn');
   msg.innerHTML = '';
+  btn.disabled = true;
+  btn.textContent = 'در حال ورود...';
   var body = {
     email: document.getElementById('email').value,
     password: document.getElementById('password').value
@@ -45,6 +53,8 @@ document.getElementById('login-form').addEventListener('submit', async function(
   } else {
     var err = await resp.json();
     msg.innerHTML = '<div class="alert alert-error">' + (err.detail || 'خطا در ورود') + '</div>';
+    btn.disabled = false;
+    btn.textContent = 'ورود';
   }
 });
 </script>

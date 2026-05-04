@@ -2,41 +2,72 @@
 {% block title %}پیشرفت کار — RubeTunes{% endblock %}
 {% block head %}
 <style>
-  #phase-badge { margin-right: 0.5rem; }
-  #download-list { margin-top: 1rem; }
+  .job-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+    flex-wrap: wrap;
+  }
+  .job-header h1 { margin: 0; }
+  .progress-section { margin: 1rem 0; }
+  .progress-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.83rem;
+    color: var(--muted);
+    margin-top: 0.3rem;
+  }
+  #download-list { margin-top: 1.25rem; }
   .download-card {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.75rem 1rem;
+    gap: 1rem;
+    padding: 0.85rem 1rem;
     border: 1px solid var(--border);
-    border-radius: 0.4rem;
-    margin-bottom: 0.5rem;
+    border-radius: var(--radius-sm);
+    margin-bottom: 0.6rem;
     background: var(--bg);
+    transition: border-color var(--transition);
   }
-  .download-card .filename { font-weight: 500; margin-bottom: 0.2rem; }
-  .download-card .meta { font-size: 0.8rem; color: var(--muted); direction: ltr; text-align: left; }
+  .download-card:hover { border-color: var(--accent); }
+  .download-card .filename { font-weight: 600; margin-bottom: 0.15rem; font-size: 0.92rem; }
+  .download-card .meta { font-size: 0.78rem; color: var(--muted); direction: ltr; text-align: left; }
   #error-box { margin-top: 1rem; }
+  @media (max-width: 480px) {
+    .download-card { flex-direction: column; align-items: flex-start; }
+    .download-card button { width: 100%; }
+  }
 </style>
 {% endblock %}
 {% block content %}
 <div style="margin-bottom:1rem">
-  <a href="/library">← کتابخانه</a>
+  <a href="/library" style="display:inline-flex; align-items:center; gap:0.3rem; color:var(--muted); font-size:0.88rem;">
+    ← بازگشت به کتابخانه
+  </a>
 </div>
 <div class="card">
-  <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:1rem">
-    <h1 style="margin:0">وضعیت کار</h1>
+  <div class="job-header">
+    <h1>وضعیت کار</h1>
     <span id="status-badge" class="badge badge-pending">در انتظار</span>
-    <span id="phase-badge" class="badge" style="display:none"></span>
+    <span id="phase-badge" class="badge badge-running" style="display:none"></span>
   </div>
-  <p id="job-meta" style="font-size:0.85rem; color:var(--muted)">شناسه: <span class="num">{{ job_id }}</span></p>
-  <progress id="progress-bar" value="0" max="100"></progress>
-  <div id="progress-text" style="font-size:0.85rem; color:var(--muted); margin-bottom:0.5rem" class="num"></div>
-  <div id="track-text" style="font-size:0.85rem; color:var(--muted); margin-bottom:0.5rem"></div>
+  <p style="font-size:0.83rem; color:var(--muted); margin-bottom:1rem">
+    شناسه: <span class="num" style="font-family:monospace; background:var(--surface-raised); padding:0.1rem 0.4rem; border-radius:0.25rem; font-size:0.8rem;">{{ job_id }}</span>
+  </p>
+  <div class="progress-section">
+    <progress id="progress-bar" value="0" max="100"></progress>
+    <div class="progress-meta">
+      <span id="track-text"></span>
+      <span id="progress-text" class="num"></span>
+    </div>
+  </div>
   <div id="error-box"></div>
   <div id="download-list"></div>
-  <div style="margin-top:1rem">
-    <button id="cancel-btn" class="btn btn-danger" style="display:none">لغو کار</button>
+  <div style="margin-top:1.25rem">
+    <button id="cancel-btn" class="btn btn-danger" style="display:none">🚫 لغو کار</button>
   </div>
 </div>
 {% endblock %}
@@ -59,6 +90,7 @@
   var _isTerminal = false;
   var _sseActive = false;
   var _pollTimer = null;
+  var POLL_INTERVAL_MS = 5000;
 
   var statusLabels = {
     'pending': 'در انتظار', 'accepted': 'پذیرفته شد',
@@ -215,10 +247,14 @@
     };
   }
 
+  function clearPollTimer() {
+    if (_pollTimer !== null) { clearTimeout(_pollTimer); _pollTimer = null; }
+  }
+
   // ── Polling fallback (used when SSE fails) ───────────────────────
   function scheduleNextPoll() {
     if (_isTerminal || _sseActive) return;
-    _pollTimer = setTimeout(doPoll, 5000);
+    _pollTimer = setTimeout(doPoll, POLL_INTERVAL_MS);
   }
 
   async function doPoll() {
@@ -263,7 +299,7 @@
   // Pause polling while tab is hidden; resume when visible again
   document.addEventListener('visibilitychange', function() {
     if (document.hidden) {
-      if (_pollTimer !== null) { clearTimeout(_pollTimer); _pollTimer = null; }
+      clearPollTimer();
     } else {
       if (!_isTerminal && !_sseActive && _pollTimer === null) scheduleNextPoll();
     }
