@@ -69,12 +69,14 @@ async def youtube_search(
             logger.warning("yt_dlp is not installed; YouTube search unavailable")
             return []
 
+        # Same cookies file used by the download pipeline (kharej/downloaders/youtube.py).
         ydl_opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
             "extract_flat": True,  # metadata only, no download
             "noplaylist": True,
             "skip_download": True,
+            "cookiefile": "/root/newrube/RubeTunes/kharej/cookies.txt",
         }
         search_url = f"ytsearch{limit}:{query}"
         try:
@@ -90,16 +92,19 @@ async def youtube_search(
             if not isinstance(entry, dict):
                 continue
             video_id: str = entry.get("id") or entry.get("url") or ""
-            # Strip any URL prefix to get a bare video ID
-            if "youtube.com" in video_id or "youtu.be" in video_id:
+            # Strip any URL prefix to get a bare video ID.
+            # Use proper URL parsing (not substring check) to avoid false matches.
+            if "://" in video_id:
                 from urllib.parse import parse_qs, urlparse  # noqa: PLC0415
 
                 parsed = urlparse(video_id)
-                qs_v = parse_qs(parsed.query).get("v")
-                if qs_v:
-                    video_id = qs_v[0]
-                elif parsed.path.startswith("/"):
-                    video_id = parsed.path.lstrip("/")
+                hostname = (parsed.hostname or "").lower()
+                if hostname.endswith("youtube.com") or hostname.endswith("youtu.be"):
+                    qs_v = parse_qs(parsed.query).get("v")
+                    if qs_v:
+                        video_id = qs_v[0]
+                    elif parsed.path.startswith("/"):
+                        video_id = parsed.path.lstrip("/")
 
             duration_sec: int | None = entry.get("duration")
             if duration_sec:

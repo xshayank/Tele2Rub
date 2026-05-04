@@ -179,8 +179,8 @@ async def search(
 
 @router.get("/thumb", include_in_schema=False)
 async def thumbnail(
+    request: Request,
     key: str = Query(..., description="S3 object key of the thumbnail."),
-    request: Request = None,  # type: ignore[assignment]
     current_user: Any = Depends(get_current_user),
 ) -> RedirectResponse:
     """Generate a presigned GET URL for an S3 thumbnail key and redirect to it.

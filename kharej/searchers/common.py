@@ -34,6 +34,17 @@ logger = logging.getLogger("kharej.searchers.common")
 # Hard limit on thumbnail file size accepted for S3 upload (5 MB).
 _MAX_THUMB_BYTES: int = 5 * 1024 * 1024
 
+# Allowlist of CDN hostnames that Kharej is permitted to download thumbnails from.
+# This prevents the thumbnail helper from being used as an arbitrary SSRF vector.
+_ALLOWED_THUMB_HOSTS: frozenset[str] = frozenset(
+    {
+        "i.ytimg.com",  # YouTube thumbnails
+        "i.scdn.co",  # Spotify cover art
+        "mosaic.scdn.co",  # Spotify mosaic covers
+        "lineup-images.scdn.co",  # Spotify playlist headers
+    }
+)
+
 
 async def upload_thumb_to_s3(
     image_url: str,
@@ -71,6 +82,21 @@ async def upload_thumb_to_s3(
     except Exception as exc:  # noqa: BLE001
         logger.debug("thumb head_object check failed (%s): %s", s3_key, exc)
         # Continue — attempt upload anyway
+
+    # Validate that the URL hostname is in the allowlist to prevent SSRF.
+    try:
+        from urllib.parse import urlparse  # noqa: PLC0415
+
+        parsed_url = urlparse(image_url)
+        hostname = (parsed_url.hostname or "").lower()
+        if hostname not in _ALLOWED_THUMB_HOSTS:
+            logger.warning(
+                "Thumbnail URL hostname %r is not in allowlist; skipping", hostname
+            )
+            return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Thumbnail URL parse error for %r: %s", image_url, exc)
+        return None
 
     def _blocking_fetch_and_upload() -> str:
         req = urllib.request.Request(

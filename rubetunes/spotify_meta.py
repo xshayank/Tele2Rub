@@ -1856,7 +1856,12 @@ def spotify_search_multi(
         log.warning("spotify_search_multi: GraphQL call failed: %s", exc)
         return {"tracks": [], "albums": [], "playlists": []}
 
-    # Tracks: reuse existing parser but enrich with cover_url and type field
+    # Tracks: reuse existing parser but enrich with cover_url and type field.
+    # Note: _parse_graphql_search() does not extract album art for track results
+    # (the graphql track item nests the album separately and the existing parser
+    # only extracts playback metadata).  A future enhancement could parse
+    # track.albumOfTrack.coverArt.sources[0].url — for now cover_url is left
+    # empty for tracks so callers can handle it gracefully.
     raw_tracks = _parse_graphql_search(data)[:limit_per_category]
     tracks: list[dict] = []
     for t in raw_tracks:
