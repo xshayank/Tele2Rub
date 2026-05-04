@@ -32,6 +32,67 @@ logger = logging.getLogger("kharej.searchers.youtube")
 # Maximum number of results allowed (guards against accidental large requests)
 _MAX_LIMIT: int = 20
 
+# Maximum per-video Stage B metadata fetches per search
+_MAX_STAGE_B: int = 10
+
+# Per-video timeout (seconds) for Stage B fetches
+_STAGE_B_TIMEOUT: float = 6.0
+
+
+def _fetch_video_date(video_id: str) -> tuple[str | None, int | None]:
+    """Blocking: fetch full metadata for *video_id* and return (date_iso, epoch).
+
+    Used in Stage B to resolve upload dates that yt-dlp's flat search omitted.
+    All errors are swallowed — on failure returns ``(None, None)``.
+    """
+    try:
+        import yt_dlp  # noqa: PLC0415
+    except ImportError:
+        return None, None
+
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    ydl_opts: dict[str, Any] = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+    if not isinstance(info, dict):
+        return None, None
+
+    upload_date_raw: str | None = info.get("upload_date")
+    upload_date_iso: str | None = None
+    if upload_date_raw and len(upload_date_raw) == 8:
+        upload_date_iso = (
+            f"{upload_date_raw[:4]}-{upload_date_raw[4:6]}-{upload_date_raw[6:]}"
+        )
+
+    ts_raw = info.get("timestamp")
+    upload_timestamp: int | None = None
+    if ts_raw is not None:
+        try:
+            upload_timestamp = int(ts_raw)
+        except (TypeError, ValueError):
+            pass
+    elif upload_date_iso:
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        try:
+            y = int(upload_date_raw[:4])  # type: ignore[index]
+            m = int(upload_date_raw[4:6])  # type: ignore[index]
+            d = int(upload_date_raw[6:])  # type: ignore[index]
+            upload_timestamp = int(datetime(y, m, d, tzinfo=timezone.utc).timestamp())
+        except (TypeError, ValueError):
+            pass
+
+    return upload_date_iso, upload_timestamp
+
 
 async def youtube_search(
     query: str,
@@ -89,6 +150,13 @@ async def youtube_search(
             return []
 
         entries = (info or {}).get("entries") or []
+
+        if entries:
+            logger.debug(
+                "yt-dlp first entry keys: %s",
+                list(entries[0].keys()) if isinstance(entries[0], dict) else type(entries[0]).__name__,
+            )
+
         raw: list[dict[str, Any]] = []
         for entry in entries:
             if not isinstance(entry, dict):
@@ -180,6 +248,40 @@ async def youtube_search(
 
     if not raw_results:
         return []
+
+    # --- Stage B: bulk-resolve missing upload dates -------------------------
+    # For results where Stage A produced no date, fetch full video metadata
+    # concurrently (capped, with per-video timeout) so the upload-date column
+    # is reliably populated even when yt-dlp's flat-search omits those fields.
+    missing = [r for r in raw_results if r.get("upload_date") is None]
+    cap = min(limit, _MAX_STAGE_B)
+    to_resolve = missing[:cap]
+
+    if to_resolve:
+        async def _resolve_one(item: dict[str, Any]) -> None:
+            video_id = item.get("video_id", "")
+            if not video_id:
+                return
+            try:
+                date_iso, upload_ts = await asyncio.wait_for(
+                    asyncio.to_thread(_fetch_video_date, video_id),
+                    timeout=_STAGE_B_TIMEOUT,
+                )
+                item["upload_date"] = date_iso
+                item["upload_timestamp"] = upload_ts
+            except Exception:  # noqa: BLE001
+                # Leave upload_date/upload_timestamp as None — never crash search
+                pass
+
+        await asyncio.gather(*[_resolve_one(r) for r in to_resolve], return_exceptions=True)
+
+    # --- Diagnostic log ----------------------------------------------------
+    have_date = sum(1 for r in raw_results if r.get("upload_date"))
+    logger.info(
+        "youtube_search done: %d results, %d with upload_date",
+        len(raw_results),
+        have_date,
+    )
 
     # Upload thumbnails to S3 concurrently (if s2 provided)
     if s2 is not None:
