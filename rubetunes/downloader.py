@@ -203,6 +203,13 @@ def _safe_name(info: dict) -> str:
     return _safe_filename(base)
 
 
+def _cookies_args(cookies_path: str | None) -> list[str]:
+    """Return ``["--cookies", path]`` when *cookies_path* points to an existing file, else ``[]``."""
+    if cookies_path and Path(cookies_path).is_file():
+        return ["--cookies", cookies_path]
+    return []
+
+
 def _download_url_to_file(url: str, out_path: Path, *, timeout: int = 120) -> None:
     """Stream *url* into *out_path*."""
     with requests.get(
@@ -349,8 +356,7 @@ def _download_deezer(info: dict, quality: str, output_dir: Path, ytdlp_bin: str,
         "--no-playlist", "--quiet", "--no-warnings",
         "--print", "after_move:filepath",
     ]
-    if cookies_path and Path(cookies_path).is_file():
-        cmd += ["--cookies", cookies_path]
+    cmd += _cookies_args(cookies_path)
     cmd.append(deezer_url)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
@@ -407,8 +413,7 @@ def _download_amazon(info: dict, quality: str, output_dir: Path, ytdlp_bin: str,
         "--no-playlist", "--quiet", "--no-warnings",
         "--print", "after_move:filepath",
     ]
-    if cookies_path and Path(cookies_path).is_file():
-        cmd += ["--cookies", cookies_path]
+    cmd += _cookies_args(cookies_path)
     cmd.append(amazon_url)
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
