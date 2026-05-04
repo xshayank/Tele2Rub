@@ -47,6 +47,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kharej.downloaders.spotify")
 
 
+_MP3_QUALITIES = {"mp3", "mp3_320", "320"}
+_FLAC_QUALITIES = {"flac", "flac_cd", "flac_hi", "flac_24bit", "24bit", "cd"}
+
+
 async def _download_spotify_track_locally(
     title: str,
     artist: str,
@@ -56,71 +60,126 @@ async def _download_spotify_track_locally(
     ytdlp_bin: str = "yt-dlp",
     cookies_path: str | None = None,
 ) -> "Path":
-    """Download a Spotify track locally via YouTube search with cookies.
+    """Download a Spotify track locally with quality-based source priority.
 
     Download order:
-    1. yt-dlp YouTube search (with cookies) — primary path, avoids bot-detection.
-    2. musicdl fallback — used when yt-dlp fails (e.g. cookies not configured).
+    - FLAC qualities (flac, flac_cd, flac_hi, flac_24bit): musicdl first, yt-dlp as backup.
+    - MP3 / default: yt-dlp first, musicdl as backup.
 
     Returns the local Path of the downloaded audio file.
     """
-    import yt_dlp as _yt_dlp  # noqa: PLC0415
+    _quality_lower = quality.lower()
+    _prefer_lossless = _quality_lower in _FLAC_QUALITIES
 
-    query = f"ytsearch1:{artist} - {title}" if artist else f"ytsearch1:{title}"
-    ydl_opts: dict = {
-        "format": "bestaudio/best",
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "320",
+    async def _try_ytdlp() -> "Path | None":
+        """Download via yt-dlp YouTube search. Returns Path or None on failure."""
+        try:
+            import yt_dlp as _yt_dlp  # noqa: PLC0415
+
+            codec = "flac" if _prefer_lossless else "mp3"
+            quality_str = "0"
+            query = f"ytsearch1:{artist} - {title}" if artist else f"ytsearch1:{title}"
+            ydl_opts: dict = {
+                "format": "bestaudio/best",
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": codec,
+                        "preferredquality": quality_str,
+                    }
+                ],
+                "outtmpl": str(tmp_dir / "%(title)s.%(ext)s"),
+                "noplaylist": True,
+                "quiet": True,
             }
-        ],
-        "outtmpl": str(tmp_dir / "%(title)s.%(ext)s"),
-        "noplaylist": True,
-        "quiet": True,
-    }
-    ydl_opts["cookiefile"] = "/root/newrube/RubeTunes/kharej/cookies.txt"
+            ydl_opts["cookiefile"] = "/root/newrube/RubeTunes/kharej/cookies.txt"
 
-    def _run_ytdlp() -> None:
-        with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([query])
+            def _run() -> None:
+                with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([query])
 
-    try:
-        await asyncio.to_thread(_run_ytdlp)
-        audio_path = next(tmp_dir.glob("*.mp3"), None)
-        if audio_path is not None:
-            try:
-                from rubetunes.tagging import embed_metadata  # noqa: PLC0415
-                embed_metadata(audio_path, info)
-            except Exception as exc:
-                logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
-            return audio_path
-        logger.warning({"event": "spotify.ytdlp_no_mp3", "query": query})
-    except Exception as exc:
-        logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
+            await asyncio.to_thread(_run)
+            ext_glob = "*.flac" if _prefer_lossless else "*.mp3"
+            audio_path = next(tmp_dir.glob(ext_glob), None) or next(
+                (
+                    p
+                    for p in tmp_dir.iterdir()
+                    if p.suffix.lower() in {".mp3", ".flac", ".m4a", ".opus", ".ogg"}
+                ),
+                None,
+            )
+            if audio_path is not None:
+                try:
+                    from rubetunes.tagging import embed_metadata  # noqa: PLC0415
 
-    # Fallback: musicdl — search then properly await the async download
-    try:
-        from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
+                    embed_metadata(audio_path, info)
+                except Exception as exc:
+                    logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
+                return audio_path
+            logger.warning({"event": "spotify.ytdlp_no_file", "query": query})
+        except Exception as exc:
+            logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
+        return None
 
-        client = MusicdlClient()
-        musicdl_query = f"{artist} - {title}" if artist else title
-        search_result = await client.search(musicdl_query, limit=1)
-        if search_result.tracks:
-            dl_result = await client.download(search_result.tracks[0], dest_dir=tmp_dir)
-            if dl_result.success and dl_result.file_path:
-                audio_path = Path(dl_result.file_path)
-                if audio_path.exists():
-                    try:
-                        from rubetunes.tagging import embed_metadata  # noqa: PLC0415
-                        embed_metadata(audio_path, info)
-                    except Exception as exc:
-                        logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
-                    return audio_path
-        logger.warning({"event": "spotify.musicdl_no_file", "query": musicdl_query})
-    except Exception as exc:
-        logger.warning({"event": "spotify.musicdl_failed", "error": repr(exc)})
+    async def _try_musicdl() -> "Path | None":
+        """Download via musicdl. Returns Path or None on failure."""
+        try:
+            from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
+
+            client = MusicdlClient()
+            musicdl_query = f"{artist} - {title}" if artist else title
+            search_result = await client.search(musicdl_query, limit=1)
+            if search_result.tracks:
+                dl_result = await client.download(search_result.tracks[0], dest_dir=tmp_dir)
+                if dl_result.success and dl_result.file_path:
+                    audio_path = Path(dl_result.file_path)
+                    if audio_path.exists():
+                        try:
+                            from rubetunes.tagging import embed_metadata  # noqa: PLC0415
+
+                            embed_metadata(audio_path, info)
+                        except Exception as exc:
+                            logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
+                        return audio_path
+            logger.warning({"event": "spotify.musicdl_no_file", "query": musicdl_query})
+        except Exception as exc:
+            logger.warning({"event": "spotify.musicdl_failed", "error": repr(exc)})
+        return None
+
+    if _prefer_lossless:
+        # FLAC: musicdl first (lossless sources), yt-dlp as backup
+        logger.info(
+            {
+                "event": "spotify.download_strategy",
+                "quality": quality,
+                "primary": "musicdl",
+                "backup": "ytdlp",
+            }
+        )
+        result = await _try_musicdl()
+        if result is not None:
+            return result
+        logger.info({"event": "spotify.musicdl_fallback_to_ytdlp", "quality": quality})
+        result = await _try_ytdlp()
+        if result is not None:
+            return result
+    else:
+        # MP3 / default: yt-dlp first, musicdl as backup
+        logger.info(
+            {
+                "event": "spotify.download_strategy",
+                "quality": quality,
+                "primary": "ytdlp",
+                "backup": "musicdl",
+            }
+        )
+        result = await _try_ytdlp()
+        if result is not None:
+            return result
+        logger.info({"event": "spotify.ytdlp_fallback_to_musicdl", "quality": quality})
+        result = await _try_musicdl()
+        if result is not None:
+            return result
 
     raise RuntimeError(
         f"All download sources failed for track: {artist!r} - {title!r}. "

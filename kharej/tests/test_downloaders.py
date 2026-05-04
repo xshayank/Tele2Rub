@@ -1027,3 +1027,217 @@ async def test_youtube_downloader_embed_metadata_failure_does_not_abort() -> Non
     assert len(refs) == 1
     assert refs[0] is _DUMMY_REF
 
+
+# ===========================================================================
+# Quality-based download priority tests
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_spotify_flac_prefers_musicdl() -> None:
+    """When quality='flac', musicdl should be tried before yt-dlp."""
+    import tempfile
+    import types
+
+    from kharej.downloaders.spotify import _download_spotify_track_locally
+
+    call_order: list[str] = []
+
+    class _FakeMusicdlClient:
+        async def search(self, query: str, limit: int = 5) -> object:
+            call_order.append("musicdl_search")
+            track = MagicMock()
+            result = MagicMock()
+            result.tracks = [track]
+            return result
+
+        async def download(self, track: object, dest_dir: Any) -> object:
+            call_order.append("musicdl_download")
+            audio = Path(dest_dir) / "track.flac"
+            audio.write_bytes(b"fLaC" + b"\x00" * 64)
+            return MagicMock(success=True, file_path=str(audio))
+
+    fake_yt_dlp = MagicMock()
+
+    # Build fake rubetunes.providers.musicdl.client module
+    fake_musicdl_module = types.ModuleType("rubetunes.providers.musicdl.client")
+    fake_musicdl_module.MusicdlClient = _FakeMusicdlClient  # type: ignore[attr-defined]
+
+    fake_modules = {
+        "yt_dlp": fake_yt_dlp,
+        "rubetunes.providers.musicdl.client": fake_musicdl_module,
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        with patch.dict("sys.modules", fake_modules):
+            result = await _download_spotify_track_locally(
+                "Apocalypse Please", "Muse", "flac", tmp_dir, {}
+            )
+
+    assert result.suffix == ".flac"
+    assert "musicdl_search" in call_order
+    assert call_order[0] == "musicdl_search", "musicdl must be tried first for flac quality"
+    # yt-dlp YoutubeDL should NOT have been instantiated since musicdl succeeded
+    fake_yt_dlp.YoutubeDL.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_spotify_mp3_prefers_ytdlp() -> None:
+    """When quality='mp3', yt-dlp should be tried before musicdl."""
+    import tempfile
+    import types
+
+    from kharej.downloaders.spotify import _download_spotify_track_locally
+
+    call_order: list[str] = []
+
+    class _FakeYDL:
+        def __init__(self, opts: dict) -> None:
+            call_order.append("ytdlp_init")
+            self._opts = opts
+
+        def __enter__(self) -> "_FakeYDL":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def download(self, queries: list) -> None:
+            outtmpl = self._opts.get("outtmpl", "")
+            out_dir = Path(outtmpl).parent
+            (out_dir / "track.mp3").write_bytes(b"\xff\xfb" * 128)
+
+    fake_yt_dlp = MagicMock()
+    fake_yt_dlp.YoutubeDL = _FakeYDL
+
+    musicdl_search_called: list[bool] = []
+
+    class _FakeMusicdlClient:
+        async def search(self, query: str, limit: int = 5) -> object:
+            musicdl_search_called.append(True)
+            result = MagicMock()
+            result.tracks = []
+            return result
+
+    fake_musicdl_module = types.ModuleType("rubetunes.providers.musicdl.client")
+    fake_musicdl_module.MusicdlClient = _FakeMusicdlClient  # type: ignore[attr-defined]
+
+    fake_modules = {
+        "yt_dlp": fake_yt_dlp,
+        "rubetunes.providers.musicdl.client": fake_musicdl_module,
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        with patch.dict("sys.modules", fake_modules):
+            result = await _download_spotify_track_locally(
+                "Never Gonna Give You Up", "Rick Astley", "mp3", tmp_dir, {}
+            )
+
+    assert result.suffix == ".mp3"
+    assert call_order[0] == "ytdlp_init", "yt-dlp must be tried first for mp3 quality"
+    assert not musicdl_search_called, "musicdl must not be called when yt-dlp succeeds for mp3"
+
+
+@pytest.mark.asyncio
+async def test_spotify_flac_falls_back_to_ytdlp() -> None:
+    """When musicdl fails for a flac request, yt-dlp should be used as backup."""
+    import tempfile
+    import types
+
+    from kharej.downloaders.spotify import _download_spotify_track_locally
+
+    class _FakeMusicdlClient:
+        async def search(self, query: str, limit: int = 5) -> object:
+            raise RuntimeError("musicdl unavailable")
+
+    class _FakeYDL:
+        def __init__(self, opts: dict) -> None:
+            self._opts = opts
+
+        def __enter__(self) -> "_FakeYDL":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def download(self, queries: list) -> None:
+            outtmpl = self._opts.get("outtmpl", "")
+            out_dir = Path(outtmpl).parent
+            (out_dir / "track.flac").write_bytes(b"fLaC" + b"\x00" * 64)
+
+    fake_yt_dlp = MagicMock()
+    fake_yt_dlp.YoutubeDL = _FakeYDL
+
+    fake_musicdl_module = types.ModuleType("rubetunes.providers.musicdl.client")
+    fake_musicdl_module.MusicdlClient = _FakeMusicdlClient  # type: ignore[attr-defined]
+
+    fake_modules = {
+        "yt_dlp": fake_yt_dlp,
+        "rubetunes.providers.musicdl.client": fake_musicdl_module,
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        with patch.dict("sys.modules", fake_modules):
+            result = await _download_spotify_track_locally(
+                "Apocalypse Please", "Muse", "flac", tmp_dir, {}
+            )
+
+    assert result.suffix == ".flac"
+
+
+@pytest.mark.asyncio
+async def test_spotify_mp3_falls_back_to_musicdl() -> None:
+    """When yt-dlp fails for an mp3 request, musicdl should be used as backup."""
+    import tempfile
+    import types
+
+    from kharej.downloaders.spotify import _download_spotify_track_locally
+
+    class _FailYDL:
+        def __init__(self, opts: dict) -> None:
+            pass
+
+        def __enter__(self) -> "_FailYDL":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            pass
+
+        def download(self, queries: list) -> None:
+            raise RuntimeError("yt-dlp failed")
+
+    fake_yt_dlp = MagicMock()
+    fake_yt_dlp.YoutubeDL = _FailYDL
+
+    class _FakeMusicdlClient:
+        async def search(self, query: str, limit: int = 5) -> object:
+            track = MagicMock()
+            result = MagicMock()
+            result.tracks = [track]
+            return result
+
+        async def download(self, track: object, dest_dir: Any) -> object:
+            audio = Path(dest_dir) / "track.mp3"
+            audio.write_bytes(b"\xff\xfb" * 128)
+            return MagicMock(success=True, file_path=str(audio))
+
+    fake_musicdl_module = types.ModuleType("rubetunes.providers.musicdl.client")
+    fake_musicdl_module.MusicdlClient = _FakeMusicdlClient  # type: ignore[attr-defined]
+
+    fake_modules = {
+        "yt_dlp": fake_yt_dlp,
+        "rubetunes.providers.musicdl.client": fake_musicdl_module,
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        with patch.dict("sys.modules", fake_modules):
+            result = await _download_spotify_track_locally(
+                "Never Gonna Give You Up", "Rick Astley", "mp3", tmp_dir, {}
+            )
+
+    assert result.suffix == ".mp3"
+
