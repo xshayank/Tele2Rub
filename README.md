@@ -1,8 +1,12 @@
+<p align="center">
+  <img src="rube_phone.svg" alt="RubeTunes" width="120" />
+</p>
+
+<h1 align="center">RubeTunes</h1>
+
 <div align="center">
 
 <img src="https://img.shields.io/badge/RubeTunes-Music%20%26%20Video%20Bot-blueviolet?style=for-the-badge&logo=music&logoColor=white" alt="RubeTunes"/>
-
-# 🎵 RubeTunes
 
 **A powerful Rubika bot that downloads music & videos from the web and sends them straight to your chat.**
 

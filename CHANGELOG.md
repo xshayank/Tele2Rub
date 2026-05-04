@@ -18,6 +18,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   automatically falls back to a 5-second polling loop that stops once the job
   reaches a terminal state (`completed`, `failed`, `cancelled`). Polling is also
   paused when the tab is hidden and resumed when it becomes visible again.
+- **Logo**: introduced `rube_mobile.svg` and `rube_desktop.svg`. The web UI nav now shows the desktop wordmark on ≥ 768 px and the compact mark on mobile; the README uses the mobile logo as the header.
 
 ### Fixed
 

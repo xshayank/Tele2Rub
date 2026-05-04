@@ -72,6 +72,7 @@
       gap: 0.4rem;
       flex-shrink: 0;
     }
+    .nav-brand img { height: 2rem; width: auto; display: block; }
     .nav-brand:hover { color: var(--accent-hover); text-decoration: none; }
     .nav-spacer { flex: 1; }
     .nav-links {
@@ -381,12 +382,18 @@
       .show-mobile-only { display: none; }
     }
   </style>
+  <link rel="icon" type="image/svg+xml" href="/static/rube_mobile.svg" />
   {% block head %}{% endblock %}
 </head>
 <body>
   <nav>
     <div class="nav-inner">
-      <a href="/" class="nav-brand">🎵 RubeTunes</a>
+      <a href="/" class="nav-brand">
+        <picture>
+          <source media="(max-width: 767px)" srcset="/static/rube_mobile.svg" />
+          <img src="/static/rube_desktop.svg" alt="RubeTunes" />
+        </picture>
+      </a>
       <div class="nav-spacer"></div>
       <button class="nav-toggle" id="nav-toggle" aria-label="منو" aria-expanded="false" aria-controls="nav-links">
         <span></span><span></span><span></span>
