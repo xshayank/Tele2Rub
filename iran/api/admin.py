@@ -400,21 +400,43 @@ async def get_storage(
     """Return S2 storage usage summary under ``media/`` and ``thumbs/``."""
     s2 = getattr(request.app.state, "s2_client", None)
     if s2 is None:
-        raise HTTPException(status_code=503, detail="S2 client not available")
+        raise HTTPException(status_code=503, detail="S2 storage backend is not configured")
 
-    try:
-        media_objects = await s2.list_job_objects("")
-    except Exception as exc:
-        logger.warning("S2 list_job_objects failed: %s", exc)
-        media_objects = []
+    all_objects: list[dict] = []
+    for prefix in ("media/", "thumbs/"):
+        try:
+            list_fn = getattr(s2, "list_objects_by_prefix", None)
+            if list_fn is not None:
+                objects = await list_fn(prefix)
+            else:
+                # Fallback for clients that only expose list_job_objects
+                objects = await s2.list_job_objects("")
+        except Exception as exc:
+            logger.warning("S2 listing failed for prefix %r: %s", prefix, exc)
+            objects = []
+        # Normalise to {key, size, last_modified} regardless of underlying shape
+        for obj in objects:
+            size_raw = obj.get("size") if obj.get("size") is not None else obj.get("Size", 0)
+            all_objects.append(
+                {
+                    "key": str(obj.get("key") or obj.get("Key", "")),
+                    "size": int(size_raw),
+                    "last_modified": str(
+                        obj.get("last_modified") or obj.get("LastModified", "")
+                    ),
+                }
+            )
 
-    total_objects = len(media_objects)
-    total_bytes = sum(o.get("size", 0) for o in media_objects)
+    total_objects = len(all_objects)
+    total_bytes = sum(o["size"] for o in all_objects)
+
+    if total_objects == 0:
+        logger.info("GET /admin/storage: result is empty (no objects found under media/ or thumbs/)")
 
     return {
         "total_objects": total_objects,
         "total_bytes": total_bytes,
-        "objects": media_objects,
+        "objects": all_objects,
     }
 
 
