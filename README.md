@@ -63,6 +63,49 @@ directly in your Rubika chat.
 | 🛡️ **Rate Limiting** | Per-user rolling-hour track limit |
 | 💾 **Disk Guard** | Rejects batches if insufficient disk space |
 
+
+
+---
+
+## 🔍 Search
+
+RubeTunes includes a web-based search UI available at `/search`.  All searches
+are executed on the **Kharej** (outside-Iran) worker — the Iran server only
+forwards queries and renders results.  Thumbnails and cover images are uploaded
+to S3 by the Kharej worker so the Iran server can serve them without accessing
+external platforms directly.
+
+### YouTube Search
+
+- Navigate to `/search`, choose **YouTube**, enter a query, click **جستجو**.
+- Top results are shown with thumbnails (served from S3 presigned URLs via
+  `GET /search/thumb?key=…`).
+- Each result has a **⬇ دانلود** button that triggers the existing YouTube
+  download pipeline (`POST /jobs` with `platform=youtube`).
+
+### Spotify Search
+
+- Choose **Spotify** from the platform dropdown.
+- Results are split into three categories: **Tracks**, **Albums**, **Playlists**.
+- Cover images are downloaded by Kharej and stored in S3 under
+  `thumbs/search/sp/{type}_{id}.jpg`.
+- Download buttons invoke the existing Spotify download flow:
+  - Tracks → `single` job type
+  - Albums / Playlists → `batch` job type
+
+### musicdl Search
+
+- Choose **musicdl** from the platform dropdown.
+- Text-only results (title, artist, source, duration) — no thumbnails.
+- The Download button passes the query to the existing musicdl download path.
+
+### API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/search` | Execute a search (body: `{platform, query, limit}`) |
+| `GET`  | `/search/thumb?key=…` | Redirect to presigned S3 URL for a thumbnail |
+
 ---
 
 ## 🚀 Quick Start

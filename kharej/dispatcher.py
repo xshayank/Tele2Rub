@@ -520,6 +520,10 @@ class Dispatcher:
         Performs the platform-specific search on the Kharej side and sends
         either a :class:`~kharej.contracts.SearchResult` or a
         :class:`~kharej.contracts.SearchFailed` message back to Iran.
+
+        Thumbnails and cover images are uploaded to S3 so that the Iran VPS
+        (which cannot reach external platforms) can serve them via presigned
+        URLs.
         """
         logger.info(
             {
@@ -534,11 +538,15 @@ class Dispatcher:
             if msg.platform == "youtube":
                 from kharej.searchers.youtube import youtube_search  # noqa: PLC0415
 
-                results = await youtube_search(msg.query, limit=msg.limit)
+                results = await youtube_search(msg.query, limit=msg.limit, s2=self._s2)
             elif msg.platform == "spotify":
                 from kharej.searchers.spotify import spotify_search  # noqa: PLC0415
 
-                results = await spotify_search(msg.query, limit_per_category=min(msg.limit, 5))
+                results = await spotify_search(
+                    msg.query,
+                    limit_per_category=min(msg.limit, 5),
+                    s2=self._s2,
+                )
             elif msg.platform == "musicdl":
                 from kharej.searchers.musicdl import musicdl_search  # noqa: PLC0415
 
@@ -546,6 +554,8 @@ class Dispatcher:
             else:
                 raise ValueError(f"Unsupported search platform: {msg.platform!r}")
 
+            # Spotify returns a dict {tracks, albums, playlists}; wrap it so
+            # SearchResult.results is always a list (union container).
             reply: SearchResult | SearchFailed = SearchResult(
                 ts=datetime.now(tz=timezone.utc),
                 request_id=msg.request_id,

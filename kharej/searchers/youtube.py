@@ -2,23 +2,30 @@
 
 Uses yt-dlp's ``ytsearch`` extractor to fetch the top *limit* results.
 No audio is downloaded — only metadata (title, channel, duration, video ID,
-and the standard YouTube thumbnail URL) is returned.
+and the thumbnail) is returned.
 
-Thumbnail note
---------------
-YouTube thumbnails are returned as native ``i.ytimg.com`` URLs using the
-predictable pattern ``https://i.ytimg.com/vi/{video_id}/hqdefault.jpg``.
-No S3 upload is performed because:
-  1. The URLs are stable, publicly accessible, and free.
-  2. Uploading ~10 thumbnails per search would consume S3 quota for ephemeral
-     data that is never downloaded through RubeTunes.
+Thumbnail handling
+------------------
+The Iran VPS **cannot** reach YouTube CDN (i.ytimg.com) directly.  For each
+search result the Kharej worker therefore downloads the thumbnail and uploads
+it to the shared S3 bucket under the key::
+
+    thumbs/search/yt/{video_id}.jpg
+
+The S3 key is returned in the result dict as ``thumbnail_key``.  If S3 upload
+fails for a particular result (network issue, oversized image, etc.) the key
+is omitted from that result — callers should handle a missing ``thumbnail_key``
+gracefully (show a placeholder image).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kharej.s2_client import S2Client
 
 logger = logging.getLogger("kharej.searchers.youtube")
 
@@ -26,7 +33,12 @@ logger = logging.getLogger("kharej.searchers.youtube")
 _MAX_LIMIT: int = 20
 
 
-async def youtube_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
+async def youtube_search(
+    query: str,
+    limit: int = 10,
+    *,
+    s2: "S2Client | None" = None,
+) -> list[dict[str, Any]]:
     """Search YouTube and return the top *limit* results.
 
     Parameters
@@ -35,13 +47,17 @@ async def youtube_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
         Free-text search query.
     limit:
         Maximum number of results to return (capped at ``_MAX_LIMIT``).
+    s2:
+        Optional Kharej S2 client.  When provided each result's thumbnail is
+        downloaded and uploaded to S3; the S3 key is included in the result
+        as ``thumbnail_key``.  When ``None`` thumbnails are omitted.
 
     Returns
     -------
     list[dict]
         Each dict contains:
         ``title``, ``channel``, ``duration``, ``video_id``, ``url``,
-        ``thumbnail_url``.
+        and optionally ``thumbnail_key`` (S3 key).
         Returns an empty list on any error.
     """
     limit = min(limit, _MAX_LIMIT)
@@ -56,7 +72,7 @@ async def youtube_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
         ydl_opts: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
-            "extract_flat": True,  # don't download, just extract metadata
+            "extract_flat": True,  # metadata only, no download
             "noplaylist": True,
             "skip_download": True,
         }
@@ -69,7 +85,7 @@ async def youtube_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
             return []
 
         entries = (info or {}).get("entries") or []
-        results: list[dict[str, Any]] = []
+        raw: list[dict[str, Any]] = []
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
@@ -92,10 +108,7 @@ async def youtube_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
             else:
                 duration_str = ""
 
-            thumbnail_url = (
-                f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg" if video_id else ""
-            )
-            results.append(
+            raw.append(
                 {
                     "title": entry.get("title") or "",
                     "channel": entry.get("uploader") or entry.get("channel") or "",
@@ -106,14 +119,44 @@ async def youtube_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
                         if video_id
                         else entry.get("webpage_url") or entry.get("url") or ""
                     ),
-                    "thumbnail_url": thumbnail_url,
+                    # Native YouTube thumbnail URL — will be replaced by S3 key below
+                    "_thumb_src": (
+                        f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+                        if video_id
+                        else ""
+                    ),
                 }
             )
 
-        return results
+        return raw
 
     try:
-        return await asyncio.to_thread(_blocking_search)
+        raw_results = await asyncio.to_thread(_blocking_search)
     except Exception as exc:  # noqa: BLE001
         logger.error("youtube_search thread error: %s", exc)
         return []
+
+    if not raw_results:
+        return []
+
+    # Upload thumbnails to S3 concurrently (if s2 provided)
+    if s2 is not None:
+        from kharej.searchers.common import upload_thumb_to_s3  # noqa: PLC0415
+
+        async def _upload_one(item: dict[str, Any]) -> dict[str, Any]:
+            thumb_src: str = item.pop("_thumb_src", "")
+            video_id: str = item.get("video_id", "")
+            if thumb_src and video_id:
+                s3_key = f"thumbs/search/yt/{video_id}.jpg"
+                uploaded_key = await upload_thumb_to_s3(thumb_src, s2, s3_key)
+                if uploaded_key:
+                    item["thumbnail_key"] = uploaded_key
+            return item
+
+        results = await asyncio.gather(*[_upload_one(r) for r in raw_results])
+        return list(results)
+    else:
+        # No S3 client — strip the internal thumbnail src field
+        for item in raw_results:
+            item.pop("_thumb_src", None)
+        return raw_results

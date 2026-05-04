@@ -83,6 +83,12 @@ async def library_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "library.html")
 
 
+@router.get("/search", response_class=HTMLResponse, include_in_schema=False)
+async def search_page(request: Request) -> HTMLResponse:
+    """Search page — search YouTube, Spotify, and musicdl from Iran."""
+    return templates.TemplateResponse(request, "search.html")
+
+
 @router.get("/settings", response_class=HTMLResponse, include_in_schema=False)
 async def settings_page(request: Request) -> HTMLResponse:
     """Account settings page."""

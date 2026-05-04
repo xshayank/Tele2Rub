@@ -28,6 +28,7 @@ from iran.api.admin import router as admin_router
 from iran.api.auth import router as auth_router
 from iran.api.health import router as health_router
 from iran.api.jobs import router as jobs_router
+from iran.api.search import router as search_router
 from iran.api.ui import router as ui_router
 from iran.config import IranSettings, get_settings
 from iran.event_bus import make_event_bus
@@ -56,6 +57,8 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
         JobCompleted,
         JobFailed,
         JobProgress,
+        SearchFailed,
+        SearchResult,
     )
     from iran.db import engine as _engine_mod
     from iran.db.models import AuditLog, Job, Setting
@@ -214,6 +217,37 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
         if event is not None:
             event.set()
 
+    async def on_search_result(msg: SearchResult) -> None:
+        """Signal the waiting POST /search endpoint with the results."""
+        pending_searches: dict = getattr(app.state, "pending_searches", {})
+        search_results: dict = getattr(app.state, "search_results", {})
+        if msg.request_id in search_results:
+            search_results[msg.request_id] = {
+                "results": msg.results,
+                "error": None,
+            }
+        event = pending_searches.get(msg.request_id)
+        if event is not None:
+            event.set()
+        logger.info("search.result received", extra={"request_id": msg.request_id})
+
+    async def on_search_failed(msg: SearchFailed) -> None:
+        """Signal the waiting POST /search endpoint with the error."""
+        pending_searches: dict = getattr(app.state, "pending_searches", {})
+        search_results: dict = getattr(app.state, "search_results", {})
+        if msg.request_id in search_results:
+            search_results[msg.request_id] = {
+                "results": [],
+                "error": msg.error,
+            }
+        event = pending_searches.get(msg.request_id)
+        if event is not None:
+            event.set()
+        logger.warning(
+            "search.failed received",
+            extra={"request_id": msg.request_id, "error": msg.error},
+        )
+
     return {
         "job.accepted": on_job_accepted,
         "job.progress": on_job_progress,
@@ -221,6 +255,8 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
         "job.failed": on_job_failed,
         "admin.ack": on_admin_ack,
         "health.pong": on_health_pong,
+        "search.result": on_search_result,
+        "search.failed": on_search_failed,
     }
 
 
@@ -258,6 +294,8 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.event_bus = make_event_bus()
         app.state.s2_client = make_s2_client(settings)
         app.state.pending_pings = {}  # request_id → asyncio.Event (health ping correlation)
+        app.state.pending_searches = {}  # request_id → asyncio.Event (search correlation)
+        app.state.search_results = {}  # request_id → result payload
 
         rubika_config = IranRubikaConfig(
             RUBIKA_SESSION_IRAN=settings.RUBIKA_SESSION_IRAN,
@@ -350,6 +388,7 @@ def create_app(settings: IranSettings | None = None) -> FastAPI:
     app.include_router(auth_router)
     app.include_router(jobs_router)
     app.include_router(admin_router)
+    app.include_router(search_router)
 
     # Mount static assets (self-hosted fonts, etc.) — must come AFTER all API
     # routers so it does not shadow any API route.

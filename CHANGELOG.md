@@ -5,6 +5,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased] — Search Feature PR
+
+### Added — Search
+
+- **YouTube Search** (`/search`, platform=`youtube`):
+  - Iran UI sends query → Kharej executes `yt-dlp ytsearchN:` → results returned to Iran.
+  - Kharej downloads each thumbnail from `i.ytimg.com` and uploads it to S3 at
+    `thumbs/search/yt/{video_id}.jpg` (existence-checked before re-upload).
+  - Iran serves thumbnails via `GET /search/thumb?key=…` (presigned S3 redirect).
+  - Download button triggers existing YouTube download pipeline (`POST /jobs`).
+
+- **Spotify Search** (`/search`, platform=`spotify`):
+  - Uses existing `spotify_search_multi()` (Spotify public GraphQL, no credentials needed).
+  - Returns top results split across three categories: **Tracks**, **Albums**, **Playlists**.
+  - Cover images fetched and uploaded to S3 at `thumbs/search/sp/{type}_{id}.jpg`.
+  - Download button reuses existing Spotify download flow (single/batch job types).
+
+- **musicdl Search** (`/search`, platform=`musicdl`):
+  - Uses existing `MusicdlClient.search()` from `rubetunes/providers/musicdl/`.
+  - Text-only results (title, artist, source, duration) — no thumbnails.
+  - Download button passes query to existing musicdl download handler.
+
+- **New contracts**: `SearchRequest`, `SearchResult`, `SearchFailed` message types
+  added to `kharej/contracts.py` and re-exported from `iran/contracts.py`.
+
+- **New kharej modules**:
+  - `kharej/searchers/__init__.py`
+  - `kharej/searchers/common.py` — shared `upload_thumb_to_s3()` helper
+  - `kharej/searchers/youtube.py`
+  - `kharej/searchers/spotify.py`
+  - `kharej/searchers/musicdl.py`
+
+- **Iran API**:
+  - `POST /search` — sends `SearchRequest` to Kharej, waits up to 30 s for reply.
+  - `GET /search/thumb?key=…` — presigned S3 redirect for thumbnails (only
+    `thumbs/search/` prefix allowed).
+  - `/search` UI page added; navigation link added to base template.
+
+- **Tests**: `tests/test_search_handlers.py`, `kharej/tests/test_search.py`.
+
+---
+
 ## [Unreleased] — Mega Improvement PR
 
 ### Added — Priority A: Foundation
