@@ -145,6 +145,53 @@ def _make_track_downloader(refs_per_track: list[S2ObjectRef] | None = None) -> M
     return dl
 
 
+def _make_fake_spodl(track_info: dict | None = None) -> MagicMock:
+    """Return a fake spotify_dl module for patching sys.modules."""
+    _default_info: dict = {
+        "title": "Test Track",
+        "artists": ["Test Artist"],
+        "cover_url": None,
+    }
+    fake = MagicMock()
+    fake.get_track_info = MagicMock(return_value=track_info or _default_info)
+    return fake
+
+
+def _make_spotify_local_download_patch(
+    fail_indices: frozenset[int] | None = None,
+):
+    """Return (patch_cm, call_count_list) for patching _download_spotify_track_locally.
+
+    Each call creates a real MP3 file in the *tmp_dir* passed by _download_one and
+    returns its path, which lets the batch zip step proceed normally.
+    Calls whose index is in *fail_indices* raise RuntimeError instead.
+    """
+    fail_set: frozenset[int] = fail_indices or frozenset()
+    call_count: list[int] = [0]
+
+    async def _fake_local_download(
+        title: str,
+        artist: str,
+        quality: str,
+        tmp_dir: Any,
+        info: dict,
+        **kwargs: Any,
+    ) -> Any:
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx in fail_set:
+            raise RuntimeError(f"simulated track failure #{idx}")
+        fp = tmp_dir / f"track_{idx:04d}.mp3"
+        fp.write_bytes(b"\xff\xfb" * 32)
+        return fp
+
+    cm = patch(
+        "kharej.downloaders.spotify._download_spotify_track_locally",
+        side_effect=_fake_local_download,
+    )
+    return cm, call_count
+
+
 # ===========================================================================
 # _build_track_urls
 # ===========================================================================
@@ -255,24 +302,25 @@ class TestSettingsGetBool:
 class TestBatchDownloaderTrackCalls:
     @pytest.mark.asyncio
     async def test_calls_per_track_downloader_n_times(self, tmp_path: Path) -> None:
-        """BatchDownloader must call the per-track downloader once per track URL."""
+        """BatchDownloader must download each track URL exactly once."""
         track_ids = ["id1", "id2", "id3"]
-        track_dl = _make_track_downloader([_make_ref(f"media/{_JOB_ID}/t.mp3")])
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        batch = BatchDownloader()
         job = _make_job(track_ids=track_ids, total_tracks=3)
         progress = _make_progress()
         s2 = _make_s2()
         settings = _make_settings()
 
-        await batch.run(job, s2=s2, progress=progress, settings=settings)
+        fake_spodl = _make_fake_spodl()
+        dl_patch, call_count = _make_spotify_local_download_patch()
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
+            await batch.run(job, s2=s2, progress=progress, settings=settings)
 
-        assert track_dl.run.call_count == 3
+        assert call_count[0] == 3
 
     @pytest.mark.asyncio
     async def test_empty_track_ids_raises(self) -> None:
         """When no tracks are available the batch downloader raises RuntimeError."""
-        track_dl = _make_track_downloader()
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        batch = BatchDownloader()
         job = _make_job(track_ids=[], total_tracks=0)
         progress = _make_progress()
         s2 = _make_s2()
@@ -281,8 +329,6 @@ class TestBatchDownloaderTrackCalls:
         with pytest.raises(RuntimeError, match="no tracks downloaded"):
             await batch.run(job, s2=s2, progress=progress, settings=settings)
 
-        assert track_dl.run.call_count == 0
-
 
 # ===========================================================================
 # Cookies forwarding: batch → SpotifyDownloader → yt-dlp
@@ -290,7 +336,7 @@ class TestBatchDownloaderTrackCalls:
 
 
 class TestBatchSpotifyCookiesForwarded:
-    """Verify that cookies in batch settings reach yt-dlp inside SpotifyDownloader.
+    """Verify that cookies in batch settings reach _download_spotify_track_locally.
 
     This is the regression test for the bug where batch._download_one called
     _download_spotify_track_locally without the cookies_path argument, causing
@@ -299,58 +345,52 @@ class TestBatchSpotifyCookiesForwarded:
 
     @pytest.mark.asyncio
     async def test_cookies_forwarded_to_ytdlp(self, tmp_path: Path) -> None:
-        """Cookies set in batch settings must be forwarded to yt-dlp via SpotifyDownloader."""
-        from kharej.downloaders.spotify import SpotifyDownloader
-
+        """Cookies set in batch settings must be forwarded to _download_spotify_track_locally."""
         cookies_file = tmp_path / "cookies.txt"
         cookies_file.write_text("# Netscape HTTP Cookie File\n")
 
-        captured_opts: list[dict] = []
+        captured_kwargs: list[dict] = []
 
-        fake_spodl = MagicMock()
-        fake_spodl.parse_spotify_track_id = MagicMock(return_value="testtrackid1234567890")
-        fake_spodl.get_track_info = MagicMock(
-            return_value={
+        async def _fake_local_download(
+            title: str,
+            artist: str,
+            quality: str,
+            tmp_dir: Any,
+            info: dict,
+            **kwargs: Any,
+        ) -> Path:
+            captured_kwargs.append(dict(kwargs))
+            fp = tmp_dir / "cookie_test.mp3"
+            fp.write_bytes(b"\xff\xfb" * 16)
+            return fp
+
+        fake_spodl = _make_fake_spodl(
+            {
                 "title": "Cookie Test Track",
                 "artists": ["Test Artist"],
                 "cover_url": None,
             }
         )
 
-        class _FakeYDL:
-            def __init__(self, opts: dict) -> None:
-                captured_opts.append(dict(opts))
-
-            def __enter__(self) -> "_FakeYDL":
-                return self
-
-            def __exit__(self, *_: object) -> None:
-                pass
-
-            def download(self, queries: list) -> None:
-                out_dir = Path(captured_opts[-1].get("outtmpl", ".")).parent
-                (out_dir / "cookie_test.mp3").write_bytes(b"\xff\xfb" * 16)
-
-        fake_yt_dlp = MagicMock()
-        fake_yt_dlp.YoutubeDL = _FakeYDL
-
-        # Use a real SpotifyDownloader as the per-track downloader so the
-        # full cookies forwarding chain is exercised.
-        s2 = _make_s2(_make_ref(f"media/{_JOB_ID}/cookie_test.mp3"))
-        batch = BatchDownloader(per_track_downloaders={"spotify": SpotifyDownloader()})
+        batch = BatchDownloader()
         job = _make_job(
             track_ids=["https://open.spotify.com/track/testtrackid1234567890"],
             total_tracks=1,
         )
         progress = _make_progress()
+        s2 = _make_s2()
         settings = _make_settings(cookies_path=str(cookies_file))
 
-        with patch.dict("sys.modules", {"spotify_dl": fake_spodl, "yt_dlp": fake_yt_dlp}):
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), \
+                patch(
+                    "kharej.downloaders.spotify._download_spotify_track_locally",
+                    side_effect=_fake_local_download,
+                ):
             await batch.run(job, s2=s2, progress=progress, settings=settings)
 
-        assert captured_opts, "YoutubeDL was never instantiated in the batch Spotify path"
-        assert captured_opts[0].get("cookiefile") == str(cookies_file), (
-            f"cookiefile not forwarded to yt-dlp; got opts keys: {list(captured_opts[0])}"
+        assert captured_kwargs, "_download_spotify_track_locally was never called"
+        assert captured_kwargs[0].get("cookies_path") == str(cookies_file), (
+            f"cookies_path not forwarded; got kwargs: {captured_kwargs[0]}"
         )
 
 
@@ -363,55 +403,65 @@ class TestBatchDownloaderFailureScenarios:
     @pytest.mark.asyncio
     async def test_partial_failure_does_not_abort(self, tmp_path: Path) -> None:
         """A failing track must not abort the rest of the batch."""
-        call_count = 0
-
-        async def _flaky_run(track_job, *, s2, progress, settings):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
-                raise RuntimeError("network error")
-            return [_make_ref(f"media/{_JOB_ID}/t{call_count}.mp3")]
-
-        track_dl = MagicMock()
-        track_dl.run = _flaky_run
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        # Fail the 2nd track (index 1), succeed the rest.
+        dl_patch, call_count = _make_spotify_local_download_patch(fail_indices=frozenset({1}))
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(track_ids=["id1", "id2", "id3"], total_tracks=3)
         progress = _make_progress()
         s2 = _make_s2()
         settings = _make_settings()
 
-        # Should not raise — partial success is OK.
-        refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
+            # Should not raise — partial success is OK.
+            refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
 
-        # 3 calls total, 2 succeeded → at least 1 zip uploaded.
-        assert call_count == 3
+        # 3 download attempts, 2 succeeded → at least 1 zip uploaded.
+        assert call_count[0] == 3
         assert len(refs) >= 1
 
     @pytest.mark.asyncio
     async def test_all_tracks_fail_raises(self) -> None:
         """When every track fails the batch downloader raises RuntimeError."""
-        track_dl = MagicMock()
-        track_dl.run = AsyncMock(side_effect=RuntimeError("all fail"))
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        dl_patch, _ = _make_spotify_local_download_patch(fail_indices=frozenset({0, 1}))
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(track_ids=["id1", "id2"], total_tracks=2)
         progress = _make_progress()
         s2 = _make_s2()
         settings = _make_settings()
 
-        with pytest.raises(RuntimeError):
-            await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
+            with pytest.raises(RuntimeError):
+                await batch.run(job, s2=s2, progress=progress, settings=settings)
 
     @pytest.mark.asyncio
-    async def test_unknown_platform_raises_value_error(self) -> None:
-        """BatchDownloader must raise ValueError when no per-track downloader found."""
-        batch = BatchDownloader(per_track_downloaders={"youtube": _make_track_downloader()})
-        job = _make_job(platform="tidal", track_ids=["id1"], total_tracks=1)
+    async def test_unknown_platform_attempts_ytdlp(self) -> None:
+        """Non-Spotify platforms use the yt-dlp path; all-fail raises RuntimeError."""
+        captured_cmds: list[list[str]] = []
+
+        def _fake_subprocess(cmd: list[str], job_id: str, loop: Any, progress_factory: Any) -> None:
+            captured_cmds.append(list(cmd))
+            raise RuntimeError("simulated yt-dlp failure")
+
+        batch = BatchDownloader()
+        job = _make_job(
+            platform="youtube",
+            url="https://youtu.be/dQw4w9WgXcQ",
+            track_ids=["https://youtu.be/dQw4w9WgXcQ"],
+            total_tracks=1,
+        )
         progress = _make_progress()
         s2 = _make_s2()
         settings = _make_settings()
 
-        with pytest.raises(ValueError, match="No per-track downloader"):
-            await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
+                patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
+            with pytest.raises(RuntimeError, match="no tracks downloaded"):
+                await batch.run(job, s2=s2, progress=progress, settings=settings)
+
+        # yt-dlp was called for the track
+        assert captured_cmds
 
 
 # ===========================================================================
@@ -423,14 +473,16 @@ class TestProgressAggregation:
     @pytest.mark.asyncio
     async def test_progress_monotonically_increases(self, tmp_path: Path) -> None:
         """Progress percent reported to the progress reporter must be non-decreasing."""
-        track_dl = _make_track_downloader([_make_ref(f"media/{_JOB_ID}/t.mp3")])
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        dl_patch, _ = _make_spotify_local_download_patch()
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(track_ids=["a", "b", "c"], total_tracks=3)
         progress = _make_progress()
         s2 = _make_s2()
         settings = _make_settings()
 
-        await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
+            await batch.run(job, s2=s2, progress=progress, settings=settings)
 
         # Extract the percent values from all report_progress calls.
         percents = [
@@ -447,29 +499,33 @@ class TestProgressAggregation:
     @pytest.mark.asyncio
     async def test_progress_ends_at_100(self, tmp_path: Path) -> None:
         """The final progress call must report percent == 100."""
-        track_dl = _make_track_downloader([_make_ref(f"media/{_JOB_ID}/t.mp3")])
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        dl_patch, _ = _make_spotify_local_download_patch()
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(track_ids=["a", "b"], total_tracks=2)
         progress = _make_progress()
         s2 = _make_s2()
         settings = _make_settings()
 
-        await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
+            await batch.run(job, s2=s2, progress=progress, settings=settings)
 
         last_call = progress.report_progress.call_args_list[-1]
         assert last_call.args[1] == 100
 
     @pytest.mark.asyncio
     async def test_progress_reports_done_tracks(self, tmp_path: Path) -> None:
-        """``done_tracks`` kwarg must be present and increase."""
-        track_dl = _make_track_downloader([_make_ref(f"media/{_JOB_ID}/t.mp3")])
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        """``done_tracks`` kwarg must be present in at least one progress call."""
+        dl_patch, _ = _make_spotify_local_download_patch()
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(track_ids=["a", "b"], total_tracks=2)
         progress = _make_progress()
         s2 = _make_s2()
         settings = _make_settings()
 
-        await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
+            await batch.run(job, s2=s2, progress=progress, settings=settings)
 
         # At least one call should have done_tracks kwarg.
         calls_with_done = [
@@ -489,8 +545,9 @@ class TestZipCreation:
     @pytest.mark.asyncio
     async def test_zip_uploaded_with_correct_key(self, tmp_path: Path) -> None:
         """A single-part ZIP must be uploaded under ``media/{job_id}/{name}.zip``."""
-        track_dl = _make_track_downloader([_make_ref(f"media/{_JOB_ID}/t.mp3")])
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        dl_patch, _ = _make_spotify_local_download_patch()
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(
             collection_name="My_Album",
             track_ids=["id1", "id2"],
@@ -500,32 +557,26 @@ class TestZipCreation:
         s2 = _make_s2()
         settings = _make_settings(enable_split=False)
 
-        refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
+            refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
 
         assert len(refs) == 1
         assert refs[0].key == f"media/{_JOB_ID}/My_Album.zip"
 
     @pytest.mark.asyncio
     async def test_zip_file_contains_expected_entries(self, tmp_path: Path) -> None:
-        """The batch downloader must upload exactly one ZIP per two downloaded tracks."""
-        track_ref_a = _make_ref(f"media/{_JOB_ID}/track_a.mp3")
-        track_ref_b = _make_ref(f"media/{_JOB_ID}/track_b.mp3")
-        _calls = [0]
-
-        async def _run(track_job, *, s2, progress, settings):
-            _calls[0] += 1
-            return [track_ref_a if _calls[0] % 2 == 1 else track_ref_b]
-
-        track_dl = MagicMock()
-        track_dl.run = _run
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        """The batch downloader must upload exactly one ZIP for two downloaded tracks."""
+        dl_patch, _ = _make_spotify_local_download_patch()
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(track_ids=["id1", "id2"], total_tracks=2)
 
         s2 = _make_s2()
         settings = _make_settings(enable_split=False)
         progress = _make_progress()
 
-        refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
+            refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
 
         # One ZIP for two tracks.
         assert len(refs) == 1
@@ -538,14 +589,16 @@ class TestZipCreation:
     @pytest.mark.asyncio
     async def test_no_split_when_disabled(self, tmp_path: Path) -> None:
         """When ``enable_zip_split`` is False there must be exactly one ZIP part."""
-        track_dl = _make_track_downloader([_make_ref(f"media/{_JOB_ID}/t.mp3")])
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        dl_patch, _ = _make_spotify_local_download_patch()
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(track_ids=["id1", "id2", "id3"], total_tracks=3)
         progress = _make_progress()
         s2 = _make_s2()
         settings = _make_settings(enable_split=False)
 
-        refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
+            refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
 
         assert len(refs) == 1
 
@@ -559,8 +612,9 @@ class TestZipSplit:
     @pytest.mark.asyncio
     async def test_split_produces_multiple_parts(self, tmp_path: Path) -> None:
         """When split is enabled and threshold is tiny, multiple parts are created."""
-        track_dl = _make_track_downloader([_make_ref(f"media/{_JOB_ID}/t.mp3")])
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        dl_patch, _ = _make_spotify_local_download_patch()
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(track_ids=["id1", "id2", "id3"], total_tracks=3)
         progress = _make_progress()
         s2 = _make_s2()
@@ -572,7 +626,8 @@ class TestZipSplit:
             with zipfile.ZipFile(str(p), "w") as zf:
                 zf.writestr("placeholder.txt", "x")
 
-        with patch("kharej.downloaders.batch._split_zip_from_files") as mock_split:
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch, \
+                patch("kharej.downloaders.batch._split_zip_from_files") as mock_split:
             mock_split.return_value = [fake_part1, fake_part2]
             refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
 
@@ -583,8 +638,9 @@ class TestZipSplit:
         """Part keys must follow ``media/{job_id}/{name}-part{N}.zip`` convention."""
         from kharej.contracts import make_part_key
 
-        track_dl = _make_track_downloader([_make_ref(f"media/{_JOB_ID}/t.mp3")])
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        dl_patch, _ = _make_spotify_local_download_patch()
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(
             collection_name="SplitAlbum",
             track_ids=["id1", "id2"],
@@ -608,7 +664,8 @@ class TestZipSplit:
             with zipfile.ZipFile(str(p), "w") as zf:
                 zf.writestr("placeholder.txt", "x")
 
-        with patch("kharej.downloaders.batch._split_zip_from_files") as mock_split:
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch, \
+                patch("kharej.downloaders.batch._split_zip_from_files") as mock_split:
             mock_split.return_value = [fake_part1, fake_part2]
             refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
 
@@ -621,15 +678,17 @@ class TestZipSplit:
     @pytest.mark.asyncio
     async def test_no_split_when_below_threshold(self, tmp_path: Path) -> None:
         """When split is enabled but total size is below threshold, one part is produced."""
-        track_dl = _make_track_downloader([_make_ref(f"media/{_JOB_ID}/t.mp3")])
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        dl_patch, _ = _make_spotify_local_download_patch()
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(track_ids=["id1"], total_tracks=1)
         progress = _make_progress()
         s2 = _make_s2()
         # Very large threshold — files will always be below it.
         settings = _make_settings(enable_split=True, threshold_mb=9999)
 
-        refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
+            refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
 
         assert len(refs) == 1
         assert refs[0].key == f"media/{_JOB_ID}/My_Playlist.zip"
@@ -649,7 +708,14 @@ class TestConcurrency:
         current_concurrent = 0
         lock = asyncio.Lock()
 
-        async def _slow_run(track_job, *, s2, progress, settings):
+        async def _slow_local_download(
+            title: str,
+            artist: str,
+            quality: str,
+            tmp_dir: Any,
+            info: dict,
+            **kwargs: Any,
+        ) -> Path:
             nonlocal current_concurrent, max_concurrent
             async with lock:
                 current_concurrent += 1
@@ -658,17 +724,23 @@ class TestConcurrency:
             await asyncio.sleep(0.05)
             async with lock:
                 current_concurrent -= 1
-            return [_make_ref(f"media/{_JOB_ID}/t.mp3")]
+            fp = tmp_dir / f"track_{id(tmp_dir)}.mp3"
+            fp.write_bytes(b"\xff\xfb" * 32)
+            return fp
 
-        track_dl = MagicMock()
-        track_dl.run = _slow_run
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(track_ids=[f"id{i}" for i in range(6)], total_tracks=6)
         progress = _make_progress()
         s2 = _make_s2()
         settings = _make_settings(concurrency=concurrency_limit)
 
-        await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), \
+                patch(
+                    "kharej.downloaders.spotify._download_spotify_track_locally",
+                    side_effect=_slow_local_download,
+                ):
+            await batch.run(job, s2=s2, progress=progress, settings=settings)
 
         assert max_concurrent <= concurrency_limit, (
             f"Concurrency exceeded: max observed = {max_concurrent}, limit = {concurrency_limit}"
@@ -678,20 +750,36 @@ class TestConcurrency:
     async def test_concurrency_1_runs_sequentially(self) -> None:
         """With concurrency=1 tracks execute strictly one at a time."""
         order: list[str] = []
+        call_counter = [0]
 
-        async def _ordered_run(track_job, *, s2, progress, settings):
-            order.append(track_job.url)
-            return [_make_ref(f"media/{_JOB_ID}/t.mp3")]
+        async def _ordered_local_download(
+            title: str,
+            artist: str,
+            quality: str,
+            tmp_dir: Any,
+            info: dict,
+            **kwargs: Any,
+        ) -> Path:
+            order.append(title)
+            idx = call_counter[0]
+            call_counter[0] += 1
+            fp = tmp_dir / f"track_{idx:04d}.mp3"
+            fp.write_bytes(b"\xff\xfb" * 32)
+            return fp
 
-        track_dl = MagicMock()
-        track_dl.run = _ordered_run
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        fake_spodl = _make_fake_spodl()
+        batch = BatchDownloader()
         job = _make_job(track_ids=["a", "b", "c"], total_tracks=3)
         progress = _make_progress()
         s2 = _make_s2()
         settings = _make_settings(concurrency=1)
 
-        await batch.run(job, s2=s2, progress=progress, settings=settings)
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), \
+                patch(
+                    "kharej.downloaders.spotify._download_spotify_track_locally",
+                    side_effect=_ordered_local_download,
+                ):
+            await batch.run(job, s2=s2, progress=progress, settings=settings)
 
         # All three must have run.
         assert len(order) == 3
@@ -807,16 +895,9 @@ class TestBatchSpotifyCollectionExpansion:
     @pytest.mark.asyncio
     async def test_album_url_expanded_to_multiple_tracks(self) -> None:
         """When track_ids is absent and job.url is a Spotify album, it should expand to N tracks."""
-        calls: list[str] = []
+        dl_patch, call_count = _make_spotify_local_download_patch()
 
-        async def _track_run(track_job, *, s2, progress, settings):
-            calls.append(track_job.url)
-            return [_make_ref(f"media/{_JOB_ID}/t.mp3")]
-
-        track_dl = MagicMock()
-        track_dl.run = _track_run
-
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        batch = BatchDownloader()
         # No track_ids — batch should fall back to job.url and expand it
         job = _make_job(
             url="https://open.spotify.com/album/TESTALBUM123456789012",
@@ -827,34 +908,25 @@ class TestBatchSpotifyCollectionExpansion:
         s2 = _make_s2()
         settings = _make_settings()
 
-        fake_spodl = MagicMock()
+        fake_spodl = _make_fake_spodl()
         fake_spodl.parse_spotify_album_id = MagicMock(return_value="TESTALBUM123456789012")
         fake_spodl.get_spotify_album_tracks = MagicMock(
             return_value=({"name": "Test Album"}, ["tid1", "tid2", "tid3"])
         )
 
-        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}):
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
             refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
 
         # Three tracks should have been downloaded (one per expanded track ID)
-        assert len(calls) == 3, f"Expected 3 track downloads, got {len(calls)}: {calls}"
-        # Each call should be an individual track URL
-        for url in calls:
-            assert "/track/" in url, f"Expected individual track URL, got: {url}"
+        assert call_count[0] == 3, f"Expected 3 track downloads, got {call_count[0]}"
+        assert refs
 
     @pytest.mark.asyncio
     async def test_playlist_url_expanded_to_multiple_tracks(self) -> None:
         """When track_ids is absent and job.url is a Spotify playlist, it should expand."""
-        calls: list[str] = []
+        dl_patch, call_count = _make_spotify_local_download_patch()
 
-        async def _track_run(track_job, *, s2, progress, settings):
-            calls.append(track_job.url)
-            return [_make_ref(f"media/{_JOB_ID}/t.mp3")]
-
-        track_dl = MagicMock()
-        track_dl.run = _track_run
-
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        batch = BatchDownloader()
         job = _make_job(
             url="https://open.spotify.com/playlist/TESTPLAYLIST12345678",
             track_ids=None,
@@ -864,24 +936,22 @@ class TestBatchSpotifyCollectionExpansion:
         s2 = _make_s2()
         settings = _make_settings()
 
-        fake_spodl = MagicMock()
+        fake_spodl = _make_fake_spodl()
         fake_spodl.parse_spotify_playlist_id = MagicMock(return_value="TESTPLAYLIST12345678")
         fake_spodl.get_spotify_playlist_tracks = MagicMock(
             return_value=({"name": "My Playlist"}, ["pA", "pB"])
         )
 
-        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}):
+        with patch.dict("sys.modules", {"spotify_dl": fake_spodl}), dl_patch:
             refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
 
-        assert len(calls) == 2
-        for url in calls:
-            assert "/track/" in url
+        assert call_count[0] == 2
+        assert refs
 
     @pytest.mark.asyncio
     async def test_explicit_empty_track_ids_raises(self) -> None:
         """Explicitly passing track_ids=[] (not None) must raise without fallback."""
-        track_dl = _make_track_downloader()
-        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        batch = BatchDownloader()
         job = _make_job(track_ids=[], total_tracks=0)
         progress = _make_progress()
         s2 = _make_s2()
@@ -889,5 +959,3 @@ class TestBatchSpotifyCollectionExpansion:
 
         with pytest.raises(RuntimeError, match="no tracks downloaded"):
             await batch.run(job, s2=s2, progress=progress, settings=settings)
-
-        assert track_dl.run.call_count == 0

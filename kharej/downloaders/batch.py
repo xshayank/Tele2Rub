@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from kharej.contracts import S2ObjectRef, make_media_key, make_part_key
-from kharej.downloaders.common import safe_filename
+from kharej.downloaders.common import resolve_cookies_path, safe_filename
 
 try:
     from zip_split import split_zip_from_files as _split_zip_from_files
@@ -193,13 +193,8 @@ class BatchDownloader:
         threshold_mb: int = settings.get_int("zip_split_threshold_mb", _DEFAULT_THRESHOLD_MB)
         threshold_bytes: int = threshold_mb * 1024 * 1024
 
-        per_track = self._get_per_track_downloaders()
-        track_downloader = per_track.get(job.platform)
-        if track_downloader is None:
-            raise ValueError(
-                f"No per-track downloader registered for platform {job.platform!r}. "
-                f"Available: {list(per_track.keys())}"
-            )
+        # Resolve cookies once for the whole batch job.
+        cookies_path = resolve_cookies_path(settings)
 
         safe_name = safe_filename(collection_name)
 
@@ -233,34 +228,74 @@ class BatchDownloader:
 
             semaphore = asyncio.Semaphore(concurrency)
 
-            async def _download_one(track_url: str) -> Path | None:
-                """Download a single track; return local path or None on failure."""
+            async def _download_one(track_url: str) -> None:
+                """Download a single track to local disk; no S3 upload."""
                 nonlocal done_count, fail_count
 
                 async with semaphore:
-                    from kharej.dispatcher import Job as _Job  # noqa: PLC0415
-
-                    track_job = _Job(
-                        job_id=job.job_id,
-                        user_id=job.user_id,
-                        platform=job.platform,
-                        url=track_url,
-                        quality=job.quality,
-                        job_type="single",
-                        payload=job.payload,
-                    )
                     try:
-                        refs = await track_downloader.run(
-                            track_job,
-                            s2=s2,
-                            progress=_NoopProgress(),
-                            settings=settings,
-                        )
-                        for ref in refs:
-                            local_name = Path(ref.key).name
-                            local_path = tmp_dir / local_name
-                            local_path.write_text(ref.key)
-                            downloaded_files.append(local_path)
+                        if job.platform == "spotify":
+                            import spotify_dl as _spodl  # noqa: PLC0415
+                            from kharej.downloaders.spotify import (  # noqa: PLC0415
+                                _download_spotify_track_locally,
+                            )
+
+                            track_id = track_url.rstrip("/").split("/")[-1]
+                            info = await asyncio.to_thread(_spodl.get_track_info, track_id)
+                            _title = info.get("title") or "Unknown"
+                            _artist = (info.get("artists") or [""])[0]
+                            # Per-track subdirectory to avoid filename collisions between
+                            # concurrent downloads.
+                            track_subdir = tmp_dir / f"sp_{track_id}"
+                            track_subdir.mkdir(exist_ok=True)
+                            audio_path = await _download_spotify_track_locally(
+                                _title,
+                                _artist,
+                                job.quality or "mp3",
+                                track_subdir,
+                                info,
+                                cookies_path=cookies_path,
+                            )
+                            downloaded_files.append(audio_path)
+                        else:
+                            # YouTube and other yt-dlp-based platforms: download locally only
+                            from kharej.downloaders.youtube import (  # noqa: PLC0415
+                                _build_command,
+                                _find_ytdlp,
+                                _run_ytdlp_subprocess,
+                            )
+
+                            ytdlp_bin = _find_ytdlp(settings)
+                            quality = job.quality or "mp3"
+                            # Per-track subdirectory so concurrent downloads don't collide.
+                            track_subdir = tmp_dir / f"yt_{abs(hash(track_url))}"
+                            track_subdir.mkdir(exist_ok=True)
+                            outtmpl = str(track_subdir / "%(title)s.%(ext)s")
+                            cmd = _build_command(
+                                ytdlp_bin, track_url, outtmpl, quality, cookies_path
+                            )
+                            loop = asyncio.get_running_loop()
+
+                            async def _noop_progress(percent: int, speed: str | None) -> None:
+                                pass
+
+                            await asyncio.to_thread(
+                                _run_ytdlp_subprocess,
+                                cmd,
+                                job.job_id,
+                                loop,
+                                _noop_progress,
+                            )
+                            _MEDIA_EXTS = {
+                                ".mp3", ".m4a", ".flac", ".ogg", ".opus", ".mp4", ".mkv",
+                            }
+                            new_files = [
+                                p
+                                for p in track_subdir.iterdir()
+                                if p.is_file() and p.suffix.lower() in _MEDIA_EXTS
+                            ]
+                            if new_files:
+                                downloaded_files.extend(new_files)
                         done_count += 1
                     except Exception as exc:
                         logger.warning(
@@ -272,18 +307,6 @@ class BatchDownloader:
                             }
                         )
                         fail_count += 1
-                        return None
-
-                percent = int(done_count * 100 / total_tracks) if total_tracks else 100
-                await progress.report_progress(
-                    job.job_id,
-                    percent,
-                    phase="downloading",
-                    done_tracks=done_count,
-                    total_tracks=total_tracks or 1,
-                    failed_tracks=fail_count,
-                )
-                return None
 
             # Build track URLs from track_ids — for Spotify the URL is
             # constructed from the track ID; for YouTube it is the track ID
