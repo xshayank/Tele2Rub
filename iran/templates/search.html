@@ -134,8 +134,8 @@
     // Use the Iran thumbnail proxy so the browser never touches external URLs.
     // Append the JWT as ?token= so <img> tags (which cannot send Authorization
     // headers) can still authenticate with the /search/thumb endpoint.
-    var t = window.getToken();
-    return '/search/thumb?key=' + encodeURIComponent(key) + (t ? '&token=' + encodeURIComponent(t) : '');
+    var jwt = window.getToken();
+    return '/search/thumb?key=' + encodeURIComponent(key) + (jwt ? '&token=' + encodeURIComponent(jwt) : '');
   }
 
   // ── Download helper ─────────────────────────────────────────────

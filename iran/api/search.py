@@ -33,9 +33,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from sqlalchemy import select
 
+from iran.api.auth import decode_access_token
 from iran.api.deps import get_current_user, get_db
 from iran.contracts import SearchRequest
+from iran.db.models import User
 
 # Separate bearer scheme for /search/thumb so it never auto-errors —
 # the endpoint handles the fallback to ?token= itself.
@@ -203,11 +206,6 @@ async def thumbnail(
     a ``?token=<jwt>`` query parameter, so that ``<img>`` tags (which cannot
     send custom headers) can also authenticate.
     """
-    from sqlalchemy import select
-
-    from iran.api.auth import decode_access_token
-    from iran.db.models import User
-
     # Prefer the Authorization header; fall back to ?token= query param.
     raw_token: str | None = credentials.credentials if credentials is not None else token
     if raw_token is None:
