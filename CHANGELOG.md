@@ -9,13 +9,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **YouTube downloader now retries with a fallback format if the requested one
-  isn't available**: relaxed the default MP4 format selectors from strict
-  `ext=mp4` / `ext=m4a` pinned variants to permissive `bv*+ba/b` selectors
-  (height-limited variants likewise), and added an automatic single retry with
-  `bv*+ba/b` (video) or `bestaudio/best` (audio) whenever yt-dlp exits with
-  "Requested format is not available".  Output is still remuxed to MP4 via
-  `--merge-output-format mp4 --remux-video mp4`.
+- **YouTube downloader now disables format checking and has a progressive-format
+  fallback to avoid "Requested format is not available" failures**: added
+  `--no-check-formats` and `--ignore-no-formats-error` to every yt-dlp download
+  invocation so spurious format-availability errors are bypassed.  When yt-dlp
+  still fails with that error after the first retry with `bv*+ba/b`, a final
+  third attempt uses progressive format selector `18/22/b` (format 18 = 360p
+  mp4+aac, 22 = 720p mp4+aac, then best) which succeeds for virtually all videos.
+  Audio-only downloads continue to use `bestaudio/best` as their single fallback.
 
 ---
 
