@@ -131,8 +131,6 @@ def _build_command(
         "--progress",
         "--newline",
         "--no-warnings",
-        # Enable remote JS challenge solver for YouTube bot detection bypass
-        "--remote-components", "ejs:npm",
     ]
     cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
     cmd += ["--write-info-json"]
