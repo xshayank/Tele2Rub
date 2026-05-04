@@ -37,6 +37,7 @@ async def download_soundcloud(
     download_dir: Path,
     ytdlp_bin: str,
     safe_name: str = "soundcloud_track",
+    cookies_path: str | None = None,
 ) -> Path:
     """Download a SoundCloud track via yt-dlp and return the output path."""
     output_tmpl = str(download_dir / f"{safe_name}.%(ext)s")
@@ -54,6 +55,8 @@ async def download_soundcloud(
         "--quiet",
         "--no-warnings",
     ]
+    if cookies_path and Path(cookies_path).is_file():
+        cmd += ["--cookies", cookies_path]
     log.info("SoundCloud download: %s", url)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
