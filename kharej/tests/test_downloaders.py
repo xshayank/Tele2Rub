@@ -876,3 +876,154 @@ async def test_spotify_musicdl_download_is_awaited() -> None:
     assert download_mock.await_count >= 1, (
         "MusicdlClient.download must be awaited, not called in a thread"
     )
+
+
+# ===========================================================================
+# embed_metadata integration tests
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_spotify_downloader_calls_embed_metadata() -> None:
+    """SpotifyDownloader.run should call embed_metadata with the audio path and info dict."""
+    from kharej.downloaders.spotify import SpotifyDownloader
+
+    fake_mod = MagicMock()
+    fake_mod.parse_spotify_track_id = MagicMock(return_value="trackembed1")
+    track_info = {
+        "title": "Embed Test Track",
+        "artists": ["Embed Artist"],
+        "cover_url": None,
+        "album": "Test Album",
+        "release_date": "2024-01-01",
+        "track_number": 1,
+        "disc_number": 1,
+    }
+    fake_mod.get_track_info = MagicMock(return_value=track_info)
+    fake_yt_dlp = _make_fake_yt_dlp()
+
+    job = _make_job(platform="spotify", url="https://open.spotify.com/track/trackembed1")
+    s2 = _make_s2(_DUMMY_REF)
+    progress = _make_progress()
+    settings = _make_settings()
+
+    embed_calls: list[tuple] = []
+
+    def _fake_embed(filepath, info):
+        embed_calls.append((filepath, info))
+
+    with patch.dict("sys.modules", {"spotify_dl": fake_mod, "yt_dlp": fake_yt_dlp}):
+        with patch("rubetunes.tagging.embed_metadata", side_effect=_fake_embed):
+            downloader = SpotifyDownloader()
+            refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
+
+    assert len(refs) >= 1
+    assert len(embed_calls) >= 1, "embed_metadata should have been called at least once"
+    called_path, called_info = embed_calls[0]
+    assert called_path.suffix == ".mp3"
+    assert called_info.get("title") == "Embed Test Track"
+
+
+@pytest.mark.asyncio
+async def test_spotify_downloader_embed_metadata_failure_does_not_abort() -> None:
+    """A failure in embed_metadata must not abort the download/upload flow."""
+    from kharej.downloaders.spotify import SpotifyDownloader
+
+    fake_mod = MagicMock()
+    fake_mod.parse_spotify_track_id = MagicMock(return_value="trackembed2")
+    fake_mod.get_track_info = MagicMock(
+        return_value={"title": "Resilient Track", "artists": ["Artist"], "cover_url": None}
+    )
+    fake_yt_dlp = _make_fake_yt_dlp()
+
+    job = _make_job(platform="spotify", url="https://open.spotify.com/track/trackembed2")
+    s2 = _make_s2(_DUMMY_REF)
+    progress = _make_progress()
+    settings = _make_settings()
+
+    with patch.dict("sys.modules", {"spotify_dl": fake_mod, "yt_dlp": fake_yt_dlp}):
+        with patch("rubetunes.tagging.embed_metadata", side_effect=RuntimeError("tag error")):
+            downloader = SpotifyDownloader()
+            refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
+
+    # Upload should still succeed despite tagging failure
+    assert len(refs) >= 1
+    assert refs[0] is _DUMMY_REF
+
+
+@pytest.mark.asyncio
+async def test_youtube_downloader_calls_embed_metadata_from_info_json(tmp_path: Path) -> None:
+    """YoutubeDownloader.run should call embed_metadata when an info.json file is present."""
+    import json
+
+    job = _make_job(quality="mp3")
+    s2 = _make_s2(_DUMMY_REF)
+    progress = _make_progress()
+    settings = _make_settings()
+
+    yt_info = {
+        "title": "YouTube Test Track",
+        "uploader": "Test Channel",
+        "channel": "Test Channel",
+        "album": None,
+        "upload_date": "20240101",
+        "thumbnail": None,
+        "track_number": None,
+    }
+
+    def _fake_subprocess(cmd, job_id, loop, progress_coro_factory):
+        idx = cmd.index("--output")
+        out_dir = Path(cmd[idx + 1]).parent
+        audio_file = out_dir / "YouTube Test Track.mp3"
+        audio_file.write_bytes(b"\xff\xfb" * 512)
+        # Write the info.json alongside the audio file
+        info_json = out_dir / "YouTube Test Track.info.json"
+        info_json.write_text(json.dumps(yt_info), encoding="utf-8")
+
+    embed_calls: list[tuple] = []
+
+    def _fake_embed(filepath, info):
+        embed_calls.append((filepath, info))
+
+    with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
+         patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess), \
+         patch("rubetunes.tagging.embed_metadata", side_effect=_fake_embed):
+        downloader = YoutubeDownloader()
+        refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
+
+    assert len(refs) == 1
+    assert refs[0] is _DUMMY_REF
+    assert len(embed_calls) == 1, "embed_metadata should have been called with info from .info.json"
+    called_path, called_info = embed_calls[0]
+    assert called_info["title"] == "YouTube Test Track"
+    assert called_info["artists"] == ["Test Channel"]
+
+
+@pytest.mark.asyncio
+async def test_youtube_downloader_embed_metadata_failure_does_not_abort() -> None:
+    """A failure in embed_metadata must not abort the YouTube download/upload flow."""
+    import json
+
+    job = _make_job(quality="mp3")
+    s2 = _make_s2(_DUMMY_REF)
+    progress = _make_progress()
+    settings = _make_settings()
+
+    def _fake_subprocess(cmd, job_id, loop, progress_coro_factory):
+        idx = cmd.index("--output")
+        out_dir = Path(cmd[idx + 1]).parent
+        audio_file = out_dir / "track.mp3"
+        audio_file.write_bytes(b"\xff\xfb" * 64)
+        info_json = out_dir / "track.info.json"
+        info_json.write_text(json.dumps({"title": "track", "uploader": "someone"}), encoding="utf-8")
+
+    with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
+         patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess), \
+         patch("rubetunes.tagging.embed_metadata", side_effect=RuntimeError("tag boom")):
+        downloader = YoutubeDownloader()
+        refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
+
+    # Upload should still succeed despite tagging failure
+    assert len(refs) == 1
+    assert refs[0] is _DUMMY_REF
+

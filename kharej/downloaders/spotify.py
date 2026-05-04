@@ -90,6 +90,11 @@ async def _download_spotify_track_locally(
         await asyncio.to_thread(_run_ytdlp)
         audio_path = next(tmp_dir.glob("*.mp3"), None)
         if audio_path is not None:
+            try:
+                from rubetunes.tagging import embed_metadata  # noqa: PLC0415
+                embed_metadata(audio_path, info)
+            except Exception as exc:
+                logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
             return audio_path
         logger.warning({"event": "spotify.ytdlp_no_mp3", "query": query})
     except Exception as exc:
@@ -107,6 +112,11 @@ async def _download_spotify_track_locally(
             if dl_result.success and dl_result.file_path:
                 audio_path = Path(dl_result.file_path)
                 if audio_path.exists():
+                    try:
+                        from rubetunes.tagging import embed_metadata  # noqa: PLC0415
+                        embed_metadata(audio_path, info)
+                    except Exception as exc:
+                        logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
                     return audio_path
         logger.warning({"event": "spotify.musicdl_no_file", "query": musicdl_query})
     except Exception as exc:
