@@ -57,6 +57,8 @@ async def youtube_search(
     list[dict]
         Each dict contains:
         ``title``, ``channel``, ``duration``, ``video_id``, ``url``,
+        ``upload_date`` (ISO string ``"YYYY-MM-DD"`` or ``None``),
+        ``upload_timestamp`` (integer UTC epoch seconds or ``None``),
         and optionally ``thumbnail_key`` (S3 key).
         Returns an empty list on any error.
     """
@@ -113,6 +115,39 @@ async def youtube_search(
             else:
                 duration_str = ""
 
+            # --- upload date / timestamp -----------------------------------
+            # yt-dlp flat-playlist entries may carry "upload_date" (YYYYMMDD)
+            # and/or "timestamp" (Unix epoch seconds).  Use what's available
+            # without triggering any extra network requests.
+            upload_date_raw: str | None = entry.get("upload_date")
+            upload_date_iso: str | None = None
+            if upload_date_raw and len(upload_date_raw) == 8:
+                upload_date_iso = (
+                    f"{upload_date_raw[:4]}-{upload_date_raw[4:6]}-{upload_date_raw[6:]}"
+                )
+
+            ts_raw = entry.get("timestamp")
+            upload_timestamp: int | None = None
+            if ts_raw is not None:
+                try:
+                    upload_timestamp = int(ts_raw)
+                except (TypeError, ValueError):
+                    pass
+            elif upload_date_iso:
+                # Derive epoch from the date (UTC midnight) so the UI can still
+                # show a relative string like "2 سال پیش".
+                from datetime import datetime, timezone  # noqa: PLC0415
+
+                try:
+                    y = int(upload_date_raw[:4])  # type: ignore[index]
+                    m = int(upload_date_raw[4:6])  # type: ignore[index]
+                    d = int(upload_date_raw[6:])   # type: ignore[index]
+                    upload_timestamp = int(
+                        datetime(y, m, d, tzinfo=timezone.utc).timestamp()
+                    )
+                except (TypeError, ValueError):
+                    pass
+
             raw.append(
                 {
                     "title": entry.get("title") or "",
@@ -124,6 +159,8 @@ async def youtube_search(
                         if video_id
                         else entry.get("webpage_url") or entry.get("url") or ""
                     ),
+                    "upload_date": upload_date_iso,
+                    "upload_timestamp": upload_timestamp,
                     # Native YouTube thumbnail URL — will be replaced by S3 key below
                     "_thumb_src": (
                         f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"

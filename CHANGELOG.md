@@ -72,6 +72,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   header, so browsers can load thumbnails via `<img src="...">` without needing
   to set custom headers.  The search UI's `thumbUrl()` helper is updated to
   append `&token=<jwt>` automatically.
+- **YouTube search results now include upload date / relative time**: each result
+  carries `upload_date` (ISO string or null) and `upload_timestamp` (epoch int or null);
+  the search UI shows "📅 X سال/ماه/روز پیش" (Persian relative time) when available.
 
 ---
 

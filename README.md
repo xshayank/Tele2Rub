@@ -80,6 +80,8 @@ external platforms directly.
 - Navigate to `/search`, choose **YouTube**, enter a query, click **جستجو**.
 - Top results are shown with thumbnails (served from S3 presigned URLs via
   `GET /search/thumb?key=…`).
+- Each result displays the upload date as a relative Persian string (e.g. "📅 ۲ سال پیش")
+  when the data is available, or the absolute date (e.g. "📅 2023-08-03") as a fallback.
 - Each result has a **⬇ دانلود** button that triggers the existing YouTube
   download pipeline (`POST /jobs` with `platform=youtube`).
 

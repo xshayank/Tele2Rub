@@ -33,6 +33,8 @@ async def test_youtube_search_returns_results() -> None:
         "title": "Rick Astley - Never Gonna Give You Up",
         "uploader": "Rick Astley",
         "duration": 213,
+        "upload_date": "20091025",
+        "timestamp": 1256428800,
     }
     fake_info = {"entries": [fake_entry]}
 
@@ -53,8 +55,75 @@ async def test_youtube_search_returns_results() -> None:
     assert "Rick Astley" in r["title"]
     assert r["duration"] == "3:33"
     assert r["url"] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    # upload date/timestamp fields must be present
+    assert r["upload_date"] == "2009-10-25"
+    assert r["upload_timestamp"] == 1256428800
     # No s2 passed → no thumbnail_key
     assert "thumbnail_key" not in r
+
+
+@pytest.mark.asyncio
+async def test_youtube_search_no_date_returns_none() -> None:
+    """youtube_search returns None for upload_date/upload_timestamp when yt-dlp omits them."""
+    fake_entry = {
+        "id": "abc123",
+        "title": "No Date Video",
+        "uploader": "Someone",
+        "duration": 60,
+        # no "upload_date" or "timestamp" keys
+    }
+    fake_info = {"entries": [fake_entry]}
+
+    class FakeYDL:
+        def __init__(self, opts): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def extract_info(self, url, download=False): return fake_info
+
+    with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+        from importlib import reload
+        import kharej.searchers.youtube as yt_mod
+        reload(yt_mod)
+        results = await yt_mod.youtube_search("no date", limit=1)
+
+    assert len(results) == 1
+    r = results[0]
+    assert r["upload_date"] is None
+    assert r["upload_timestamp"] is None
+
+
+@pytest.mark.asyncio
+async def test_youtube_search_date_only_derives_timestamp() -> None:
+    """youtube_search derives upload_timestamp from upload_date when timestamp is absent."""
+    fake_entry = {
+        "id": "xyz789",
+        "title": "Date Only Video",
+        "uploader": "Channel",
+        "duration": 120,
+        "upload_date": "20230803",
+        # no "timestamp" key
+    }
+    fake_info = {"entries": [fake_entry]}
+
+    class FakeYDL:
+        def __init__(self, opts): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def extract_info(self, url, download=False): return fake_info
+
+    with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+        from importlib import reload
+        import kharej.searchers.youtube as yt_mod
+        reload(yt_mod)
+        results = await yt_mod.youtube_search("date only", limit=1)
+
+    assert len(results) == 1
+    r = results[0]
+    assert r["upload_date"] == "2023-08-03"
+    # timestamp derived from 2023-08-03 UTC midnight
+    from datetime import datetime, timezone
+    expected_ts = int(datetime(2023, 8, 3, tzinfo=timezone.utc).timestamp())
+    assert r["upload_timestamp"] == expected_ts
 
 
 @pytest.mark.asyncio
