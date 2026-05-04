@@ -45,6 +45,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Tests**: `tests/test_search_handlers.py`, `kharej/tests/test_search.py`.
 
+### Fixed — Search
+
+- **`/search/thumb` 401 on `<img>` tags**: The endpoint now accepts the JWT via
+  a `?token=<jwt>` query parameter in addition to the `Authorization: Bearer`
+  header, so browsers can load thumbnails via `<img src="...">` without needing
+  to set custom headers.  The search UI's `thumbUrl()` helper is updated to
+  append `&token=<jwt>` automatically.
+
 ---
 
 ## [Unreleased] — Mega Improvement PR

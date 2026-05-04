@@ -31,10 +31,15 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
-from iran.api.deps import get_current_user
+from iran.api.deps import get_current_user, get_db
 from iran.contracts import SearchRequest
+
+# Separate bearer scheme for /search/thumb so it never auto-errors —
+# the endpoint handles the fallback to ?token= itself.
+_thumb_bearer = HTTPBearer(auto_error=False)
 
 logger = logging.getLogger("iran.api.search")
 
@@ -181,7 +186,9 @@ async def search(
 async def thumbnail(
     request: Request,
     key: str = Query(..., description="S3 object key of the thumbnail."),
-    current_user: Any = Depends(get_current_user),
+    token: str | None = Query(None, description="JWT token (alternative to Authorization header)."),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_thumb_bearer),
+    session: Any = Depends(get_db),
 ) -> RedirectResponse:
     """Generate a presigned GET URL for an S3 thumbnail key and redirect to it.
 
@@ -191,7 +198,41 @@ async def thumbnail(
 
     Only keys under ``thumbs/search/`` are allowed to prevent this endpoint
     from being used as an oracle for arbitrary S3 objects.
+
+    Authentication: accepts either ``Authorization: Bearer <jwt>`` header **or**
+    a ``?token=<jwt>`` query parameter, so that ``<img>`` tags (which cannot
+    send custom headers) can also authenticate.
     """
+    from sqlalchemy import select
+
+    from iran.api.auth import decode_access_token
+    from iran.db.models import User
+
+    # Prefer the Authorization header; fall back to ?token= query param.
+    raw_token: str | None = credentials.credentials if credentials is not None else token
+    if raw_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    payload = decode_access_token(raw_token)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user_id: str = payload["sub"]
+    db_result = await session.execute(select(User).where(User.id == user_id))
+    user: User | None = db_result.scalar_one_or_none()
+    if user is None or user.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or not active",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     if not key.startswith("thumbs/search/"):
         raise HTTPException(status_code=400, detail="Invalid thumbnail key prefix.")
 
