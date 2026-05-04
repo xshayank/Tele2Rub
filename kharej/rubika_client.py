@@ -299,6 +299,11 @@ class RubikaClient:
         if not self._transport.connected:
             raise RubikaNotConnectedError("Not connected to Rubika")
         wire = encode(message)  # raises ValueError on oversize
+        logger.debug(
+            "rubika out: type=%s bytes=%d",
+            getattr(message, "type", "?"),
+            len(wire.encode()),
+        )
         try:
             await self._transport.send_text(self._config.iran_account_guid, wire)
         except RubikaNotConnectedError:

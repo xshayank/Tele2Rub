@@ -162,6 +162,110 @@ async def test_youtube_search_uploads_thumbnail_to_s3() -> None:
 
 
 @pytest.mark.asyncio
+async def test_youtube_search_resolves_missing_date_via_full_fetch() -> None:
+    """Stage B: per-video full fetch resolves upload_date when flat search omits it."""
+    flat_entry = {
+        "id": "vid001",
+        "title": "Missing Date Video",
+        "uploader": "Channel",
+        "duration": 90,
+        # no upload_date or timestamp
+    }
+
+    call_count = [0]
+
+    class FakeYDL:
+        def __init__(self, opts): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def extract_info(self, url, download=False):
+            call_count[0] += 1
+            if "ytsearch" in url:
+                return {"entries": [flat_entry]}
+            # Per-video full fetch returns date
+            return {"upload_date": "20230101", "timestamp": 1672531200}
+
+    with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+        from importlib import reload
+        import kharej.searchers.youtube as yt_mod
+        reload(yt_mod)
+        results = await yt_mod.youtube_search("missing date", limit=1)
+
+    assert len(results) == 1
+    r = results[0]
+    assert r["upload_date"] == "2023-01-01"
+    assert r["upload_timestamp"] == 1672531200
+    assert call_count[0] >= 2  # flat search + at least one per-video fetch
+
+
+@pytest.mark.asyncio
+async def test_youtube_search_full_fetch_failure_falls_back_to_none() -> None:
+    """Stage B: if per-video fetch raises, upload_date stays None and no crash."""
+    flat_entry = {
+        "id": "vid002",
+        "title": "Error Video",
+        "uploader": "Channel",
+        "duration": 45,
+        # no upload_date
+    }
+
+    class FakeYDL:
+        def __init__(self, opts): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def extract_info(self, url, download=False):
+            if "ytsearch" in url:
+                return {"entries": [flat_entry]}
+            raise RuntimeError("Full fetch failed")
+
+    with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+        from importlib import reload
+        import kharej.searchers.youtube as yt_mod
+        reload(yt_mod)
+        results = await yt_mod.youtube_search("error video", limit=1)
+
+    assert len(results) == 1
+    r = results[0]
+    assert r["upload_date"] is None
+    assert r["upload_timestamp"] is None
+
+
+@pytest.mark.asyncio
+async def test_youtube_search_skips_full_fetch_when_already_present() -> None:
+    """Stage B is not triggered when Stage A already provides upload_date."""
+    fake_entry = {
+        "id": "vid003",
+        "title": "Has Date Video",
+        "uploader": "Channel",
+        "duration": 120,
+        "upload_date": "20221115",
+        "timestamp": 1668470400,
+    }
+    fake_info = {"entries": [fake_entry]}
+
+    extract_info_mock = MagicMock(return_value=fake_info)
+
+    class FakeYDL:
+        def __init__(self, opts): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        extract_info = extract_info_mock
+
+    with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+        from importlib import reload
+        import kharej.searchers.youtube as yt_mod
+        reload(yt_mod)
+        results = await yt_mod.youtube_search("has date", limit=1)
+
+    assert len(results) == 1
+    r = results[0]
+    assert r["upload_date"] == "2022-11-15"
+    assert r["upload_timestamp"] == 1668470400
+    # extract_info called exactly once (flat search only — Stage B not triggered)
+    extract_info_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_youtube_search_empty_query_returns_empty() -> None:
     """youtube_search with yt-dlp raising an exception returns empty list."""
 
