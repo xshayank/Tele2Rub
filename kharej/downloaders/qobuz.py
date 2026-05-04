@@ -94,6 +94,12 @@ class QobuzDownloader:
             logger.info({"event": "qobuz.download_start", "job_id": job.job_id})
             audio_path: Path = await _spodl.download_track(info, tmp_dir, ytdlp_bin, cookies_path=cookies_path)
 
+            try:
+                from rubetunes.tagging import embed_metadata  # noqa: PLC0415
+                embed_metadata(audio_path, info)
+            except Exception as exc:
+                logger.warning({"event": "qobuz.tag_failed", "job_id": job.job_id, "error": repr(exc)})
+
             await progress.report_progress(job.job_id, 90, phase="uploading")
 
             ext = audio_path.suffix.lstrip(".")

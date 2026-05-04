@@ -53,6 +53,7 @@ async def download_bandcamp(
         "--no-warnings",
     ]
     cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
+    cmd += ["--embed-thumbnail"]
     log.info("Bandcamp download: %s", url)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
