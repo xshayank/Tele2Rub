@@ -107,10 +107,13 @@ __all__ = [
     "_parse_graphql_artist",
     "_parse_graphql_artist_discography",
     "_parse_graphql_search",
+    "_parse_graphql_search_albums",
+    "_parse_graphql_search_playlists",
     "_GRAPHQL_HASH_QUERY_ARTIST_OVERVIEW",
     "_GRAPHQL_HASH_QUERY_ARTIST_DISCOGRAPHY",
     "_GRAPHQL_HASH_SEARCH_DESKTOP",
     "spotify_search",
+    "spotify_search_multi",
 ]
 
 SPOTIFY_CLIENT_ID     = os.getenv("SPOTIFY_CLIENT_ID",     "").strip()
@@ -1733,3 +1736,141 @@ def spotify_search(query: str, limit: int = 10) -> list[dict]:
         return []
     return _parse_graphql_search(data)[:limit]
 
+
+def _parse_graphql_search_albums(data: dict, limit: int = 5) -> list[dict]:
+    """Parse album items from a ``searchDesktop`` GraphQL response.
+
+    Returns up to *limit* album dicts with keys:
+    ``name``, ``artists``, ``url``, ``cover_url``, ``type``.
+    """
+    data_map = _sp_map(data, "data")
+    search_data = _sp_map(data_map, "searchV2")
+    if not search_data:
+        return []
+
+    albums_container = _sp_map(search_data, "albums")
+    results: list[dict] = []
+    for item in _sp_list(albums_container, "items"):
+        if not isinstance(item, dict):
+            continue
+        alb: dict = _sp_map(item, "data") or item
+        if not alb:
+            continue
+        name = _sp_str(alb, "name")
+        if not name:
+            continue
+        album_uri = _sp_str(alb, "uri")
+        album_id = album_uri.split(":")[-1] if ":" in album_uri else _sp_str(alb, "id")
+        artists = _sp_extract_artists(_sp_map(alb, "artists"))
+        cover_url: str | None = None
+        cover_art = _sp_map(alb, "coverArt")
+        if cover_art:
+            sources = _sp_list(cover_art, "sources")
+            if sources and isinstance(sources[0], dict):
+                cover_url = _sp_str(sources[0], "url") or None
+        results.append(
+            {
+                "name": name,
+                "artists": ", ".join(a["name"] for a in artists),
+                "url": f"https://open.spotify.com/album/{album_id}" if album_id else "",
+                "cover_url": cover_url or "",
+                "type": "album",
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _parse_graphql_search_playlists(data: dict, limit: int = 5) -> list[dict]:
+    """Parse playlist items from a ``searchDesktop`` GraphQL response.
+
+    Returns up to *limit* playlist dicts with keys:
+    ``name``, ``owner``, ``url``, ``cover_url``, ``type``.
+    """
+    data_map = _sp_map(data, "data")
+    search_data = _sp_map(data_map, "searchV2")
+    if not search_data:
+        return []
+
+    playlists_container = _sp_map(search_data, "playlists")
+    results: list[dict] = []
+    for item in _sp_list(playlists_container, "items"):
+        if not isinstance(item, dict):
+            continue
+        pl: dict = _sp_map(item, "data") or item
+        if not pl:
+            continue
+        name = _sp_str(pl, "name")
+        if not name:
+            continue
+        pl_uri = _sp_str(pl, "uri")
+        pl_id = pl_uri.split(":")[-1] if ":" in pl_uri else _sp_str(pl, "id")
+        # Owner name
+        owner_data = _sp_map(_sp_map(pl, "ownerV2"), "data")
+        owner = _sp_str(owner_data, "name") if owner_data else ""
+        # Cover image
+        cover_url: str | None = None
+        images_data = _sp_map(pl, "images") or _sp_map(pl, "imagesV2")
+        if images_data:
+            image_items = _sp_list(images_data, "items")
+            if image_items and isinstance(image_items[0], dict):
+                first_sources = _sp_list(image_items[0], "sources")
+                if first_sources and isinstance(first_sources[0], dict):
+                    cover_url = _sp_str(first_sources[0], "url") or None
+            if cover_url is None:
+                img_sources = _sp_list(images_data, "sources")
+                if img_sources and isinstance(img_sources[0], dict):
+                    cover_url = _sp_str(img_sources[0], "url") or None
+        results.append(
+            {
+                "name": name,
+                "owner": owner,
+                "url": f"https://open.spotify.com/playlist/{pl_id}" if pl_id else "",
+                "cover_url": cover_url or "",
+                "type": "playlist",
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def spotify_search_multi(
+    query: str, limit_per_category: int = 5
+) -> dict[str, list[dict]]:
+    """Search Spotify for tracks, albums, and playlists via ``searchDesktop`` GraphQL.
+
+    Returns a dict with keys ``tracks``, ``albums``, ``playlists``, each
+    containing up to *limit_per_category* result dicts.
+
+    Track dict keys: ``title``, ``artists``, ``url``, ``cover_url``, ``type``
+    Album dict keys: ``name``, ``artists``, ``url``, ``cover_url``, ``type``
+    Playlist dict keys: ``name``, ``owner``, ``url``, ``cover_url``, ``type``
+    """
+    # Request enough results to fill all three categories
+    fetch_limit = max(limit_per_category, 10)
+    try:
+        data = _fetch_search_graphql(query, 0, fetch_limit)
+    except Exception as exc:
+        log.warning("spotify_search_multi: GraphQL call failed: %s", exc)
+        return {"tracks": [], "albums": [], "playlists": []}
+
+    # Tracks: reuse existing parser but enrich with cover_url and type field
+    raw_tracks = _parse_graphql_search(data)[:limit_per_category]
+    tracks: list[dict] = []
+    for t in raw_tracks:
+        tracks.append(
+            {
+                "title": t.get("title", ""),
+                "artists": ", ".join(t.get("artists") or []),
+                "url": t.get("url", ""),
+                "cover_url": "",  # Track search results don't include cover in existing parser
+                "type": "track",
+            }
+        )
+
+    albums = _parse_graphql_search_albums(data, limit=limit_per_category)
+    playlists = _parse_graphql_search_playlists(data, limit=limit_per_category)
+
+    return {"tracks": tracks, "albums": albums, "playlists": playlists}

@@ -42,6 +42,9 @@ from kharej.contracts import (
     Platform,
     ProviderStatus,
     S2ObjectRef,
+    SearchFailed,
+    SearchRequest,
+    SearchResult,
     UserBlockAdd,
     UserBlockRemove,
     UserWhitelistAdd,
@@ -88,6 +91,10 @@ __all__ = [
     # Health messages
     "HealthPing",
     "HealthPong",
+    # Search messages
+    "SearchFailed",
+    "SearchRequest",
+    "SearchResult",
     # Discriminated union
     "AnyMessage",
     # Encode / decode helpers
