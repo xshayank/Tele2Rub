@@ -122,9 +122,7 @@ def _base_ytdlp_cmd() -> list[str]:
         "--referer",
         "https://www.youtube.com/",
     ]
-    cookies = _BASE_DIR / "cookies.txt"
-    if cookies.exists():
-        cmd += ["--cookies", str(cookies)]
+    cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
     return cmd
 
 

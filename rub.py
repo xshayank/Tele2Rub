@@ -327,8 +327,7 @@ def _base_cmd() -> list:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
         "--referer", "https://www.youtube.com/",
     ]
-    if COOKIES_FILE.exists():
-        cmd += ["--cookies", str(COOKIES_FILE)]
+    cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
     return cmd
 
 
