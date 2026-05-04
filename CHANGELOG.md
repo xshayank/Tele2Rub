@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased] — YouTube Download Resilience
+
+### Fixed
+
+- **YouTube downloader now retries with a fallback format if the requested one
+  isn't available**: relaxed the default MP4 format selectors from strict
+  `ext=mp4` / `ext=m4a` pinned variants to permissive `bv*+ba/b` selectors
+  (height-limited variants likewise), and added an automatic single retry with
+  `bv*+ba/b` (video) or `bestaudio/best` (audio) whenever yt-dlp exits with
+  "Requested format is not available".  Output is still remuxed to MP4 via
+  `--merge-output-format mp4 --remux-video mp4`.
+
+---
+
 ## [Unreleased] — UI Modernization PR
 
 ### Added

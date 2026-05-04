@@ -73,12 +73,17 @@ def _find_ytdlp(settings: "KharejSettings") -> str:
 _YOUTUBE_FORMATS: dict[str, str] = {
     "mp3": "bestaudio/best",
     "flac": "bestaudio/best",
-    "mp4": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
-    "mp4-1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-    "mp4-720p": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]",
-    "mp4-480p": "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]",
-    "mp4-360p": "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]",
+    "mp4": "bv*+ba/b",
+    "mp4-1080p": "bv*[height<=1080]+ba/b[height<=1080]/b",
+    "mp4-720p": "bv*[height<=720]+ba/b[height<=720]/b",
+    "mp4-480p": "bv*[height<=480]+ba/b[height<=480]/b",
+    "mp4-360p": "bv*[height<=360]+ba/b[height<=360]/b",
 }
+
+# Fallback format selectors used when the primary selector is not available
+_FALLBACK_VIDEO_FORMAT = "bv*+ba/b"
+_FALLBACK_AUDIO_FORMAT = "bestaudio/best"
+_FORMAT_NOT_AVAILABLE_MSG = "Requested format is not available"
 
 _VALID_QUALITIES: frozenset[str] = frozenset(_YOUTUBE_FORMATS)
 
@@ -153,10 +158,47 @@ def _run_ytdlp_subprocess(
     job_id: str,
     loop: asyncio.AbstractEventLoop,
     progress_coro_factory,
+    *,
+    _is_audio: bool = False,
 ) -> None:
-    """Run yt-dlp as a subprocess, parse progress lines, call progress_coro_factory."""
+    """Run yt-dlp as a subprocess, parse progress lines, call progress_coro_factory.
+
+    If yt-dlp fails with "Requested format is not available", a single automatic
+    retry is performed using a permissive fallback format selector.
+    """
     logger.debug({"event": "youtube.subprocess_cmd", "cmd": cmd})
 
+    output_lines = _exec_ytdlp(cmd, loop, progress_coro_factory)
+
+    if output_lines is not None:
+        # First run failed — check for the format-not-available error
+        stderr_tail_first = "\n".join(output_lines[-20:])
+        if _FORMAT_NOT_AVAILABLE_MSG in stderr_tail_first:
+            # Retry with a permissive fallback format
+            logger.info({"event": "youtube.retry_format", "job_id": job_id})
+            fallback_fmt = _FALLBACK_AUDIO_FORMAT if _is_audio else _FALLBACK_VIDEO_FORMAT
+            retry_cmd = _replace_format_arg(cmd, fallback_fmt)
+            logger.debug({"event": "youtube.subprocess_cmd_retry", "cmd": retry_cmd})
+            retry_output = _exec_ytdlp(retry_cmd, loop, progress_coro_factory)
+            if retry_output is not None:
+                stderr_tail_retry = "\n".join(retry_output[-20:])
+                raise RuntimeError(
+                    f"yt-dlp failed even after format fallback retry.\n"
+                    f"--- first attempt ---\n{stderr_tail_first}\n"
+                    f"--- retry attempt ---\n{stderr_tail_retry}"
+                )
+        else:
+            raise RuntimeError(
+                f"yt-dlp exited with non-zero status:\n{stderr_tail_first}"
+            )
+
+
+def _exec_ytdlp(
+    cmd: list[str],
+    loop: asyncio.AbstractEventLoop,
+    progress_coro_factory,
+) -> list[str] | None:
+    """Execute a yt-dlp command and return output lines on failure, None on success."""
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -184,10 +226,18 @@ def _run_ytdlp_subprocess(
 
     process.wait()
     if process.returncode != 0:
-        stderr_tail = "\n".join(output_lines[-20:])
-        raise RuntimeError(
-            f"yt-dlp exited with code {process.returncode}:\n{stderr_tail}"
-        )
+        return output_lines
+    return None
+
+
+def _replace_format_arg(cmd: list[str], new_fmt: str) -> list[str]:
+    """Return a copy of *cmd* with the ``--format`` value replaced by *new_fmt*."""
+    result = list(cmd)
+    for i, arg in enumerate(result):
+        if arg == "--format" and i + 1 < len(result):
+            result[i + 1] = new_fmt
+            return result
+    return result
 
 
 def _resolve_cookies_path(settings: "KharejSettings") -> str | None:
@@ -243,6 +293,7 @@ class YoutubeDownloader:
                 job.job_id,
                 loop,
                 _make_progress,
+                _is_audio=_is_audio_quality(quality),
             )
 
             # Find the downloaded file — prefer most-recently-modified media file
