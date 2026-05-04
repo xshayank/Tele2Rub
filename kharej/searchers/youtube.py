@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -36,14 +37,19 @@ _MAX_LIMIT: int = 20
 _MAX_STAGE_B: int = 10
 
 # Per-video timeout (seconds) for Stage B fetches
-_STAGE_B_TIMEOUT: float = 6.0
+_STAGE_B_TIMEOUT: float = 15.0
+
+# Cookies file shared by Stage A (flat search) and Stage B (full-metadata fetch).
+# Only passed to yt-dlp when the file actually exists so dev/test environments
+# without this file run unauthenticated rather than failing with a yt-dlp error.
+_COOKIES_PATH: str = "/root/newrube/RubeTunes/kharej/cookies.txt"
 
 
 def _fetch_video_date(video_id: str) -> tuple[str | None, int | None]:
     """Blocking: fetch full metadata for *video_id* and return (date_iso, epoch).
 
     Used in Stage B to resolve upload dates that yt-dlp's flat search omitted.
-    All errors are swallowed — on failure returns ``(None, None)``.
+    All errors are logged and swallowed — on failure returns ``(None, None)``.
     """
     try:
         import yt_dlp  # noqa: PLC0415
@@ -57,10 +63,13 @@ def _fetch_video_date(video_id: str) -> tuple[str | None, int | None]:
         "skip_download": True,
         "noplaylist": True,
     }
+    if os.path.isfile(_COOKIES_PATH):
+        ydl_opts["cookiefile"] = _COOKIES_PATH
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Stage B fetch failed for %s: %s", video_id, exc)
         return None, None
 
     if not isinstance(info, dict):
@@ -139,8 +148,9 @@ async def youtube_search(
             "extract_flat": True,  # metadata only, no download
             "noplaylist": True,
             "skip_download": True,
-            "cookiefile": "/root/newrube/RubeTunes/kharej/cookies.txt",
         }
+        if os.path.isfile(_COOKIES_PATH):
+            ydl_opts["cookiefile"] = _COOKIES_PATH
         search_url = f"ytsearch{limit}:{query}"
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -269,9 +279,10 @@ async def youtube_search(
                 )
                 item["upload_date"] = date_iso
                 item["upload_timestamp"] = upload_ts
-            except Exception:  # noqa: BLE001
-                # Leave upload_date/upload_timestamp as None — never crash search
-                pass
+            except asyncio.TimeoutError:
+                logger.info("Stage B timeout for %s", video_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Stage B unexpected error for %s: %s", video_id, exc)
 
         await asyncio.gather(*[_resolve_one(r) for r in to_resolve], return_exceptions=True)
 

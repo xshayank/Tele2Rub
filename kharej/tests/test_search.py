@@ -7,6 +7,7 @@ operations are mocked — no live API calls are made.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -283,6 +284,94 @@ async def test_youtube_search_empty_query_returns_empty() -> None:
         results = await yt_mod.youtube_search("anything", limit=5)
 
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_youtube_search_stage_b_uses_cookies() -> None:
+    """Stage B: _fetch_video_date includes cookiefile in ydl_opts when _COOKIES_PATH exists."""
+    flat_entry = {
+        "id": "vid004",
+        "title": "Cookie Test Video",
+        "uploader": "Channel",
+        "duration": 60,
+        # no upload_date — triggers Stage B
+    }
+
+    captured_opts: list[dict] = []
+
+    class FakeYDL:
+        def __init__(self, opts):
+            captured_opts.append(dict(opts))
+
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+        def extract_info(self, url, download=False):
+            if "ytsearch" in url:
+                return {"entries": [flat_entry]}
+            return {"upload_date": "20240101", "timestamp": 1704067200}
+
+    with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+        from importlib import reload
+        import kharej.searchers.youtube as yt_mod
+        reload(yt_mod)
+        # Patch os.path.isfile so _COOKIES_PATH appears to exist
+        with patch("kharej.searchers.youtube.os.path.isfile", return_value=True):
+            results = await yt_mod.youtube_search("cookie test", limit=1)
+
+    assert len(results) == 1
+    # At least two YDL instances created: one for flat search (Stage A), one for Stage B
+    assert len(captured_opts) >= 2
+    # The Stage B call (full-video fetch, no extract_flat) should carry the cookiefile
+    stage_b_opts = [o for o in captured_opts if not o.get("extract_flat")]
+    assert stage_b_opts, "No Stage B YDL call found"
+    assert stage_b_opts[0].get("cookiefile") == yt_mod._COOKIES_PATH
+    # Stage A should also carry the cookiefile
+    stage_a_opts = [o for o in captured_opts if o.get("extract_flat")]
+    assert stage_a_opts, "No Stage A YDL call found"
+    assert stage_a_opts[0].get("cookiefile") == yt_mod._COOKIES_PATH
+
+
+@pytest.mark.asyncio
+async def test_youtube_search_stage_b_logs_failure(caplog: pytest.LogCaptureFixture) -> None:
+    """Stage B: extract_info raising logs a warning with video_id; result stays None (no crash)."""
+    flat_entry = {
+        "id": "vid005",
+        "title": "Bot Check Video",
+        "uploader": "Channel",
+        "duration": 30,
+        # no upload_date — triggers Stage B
+    }
+
+    class FakeYDL:
+        def __init__(self, opts): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+        def extract_info(self, url, download=False):
+            if "ytsearch" in url:
+                return {"entries": [flat_entry]}
+            raise RuntimeError("bot check")
+
+    with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
+        from importlib import reload
+        import kharej.searchers.youtube as yt_mod
+        reload(yt_mod)
+        with caplog.at_level(logging.WARNING, logger="kharej.searchers.youtube"):
+            results = await yt_mod.youtube_search("bot check test", limit=1)
+
+    # Search must still return a result (no crash)
+    assert len(results) == 1
+    r = results[0]
+    assert r["upload_date"] is None
+    assert r["upload_timestamp"] is None
+
+    # A warning log line must contain the video_id and the error message
+    warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        "vid005" in r.getMessage() and "bot check" in r.getMessage()
+        for r in warning_records
+    ), f"Expected warning with video_id and error; got: {[r.getMessage() for r in warning_records]}"
 
 
 @pytest.mark.asyncio
