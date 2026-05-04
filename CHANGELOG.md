@@ -76,6 +76,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   carries `upload_date` (ISO string or null) and `upload_timestamp` (epoch int or null);
   the search UI shows "📅 X سال/ماه/روز پیش" (Persian relative time) when available.
 - **YouTube search**: when yt-dlp's flat search omits `upload_date`/`timestamp` (common case), Kharej now does a fast bulk per-video metadata fetch (capped, with timeout) so the upload-date column is reliably populated.
+- **YouTube search**: Stage B (per-video metadata fallback) now uses the same `cookies.txt` as Stage A so it survives YouTube's bot-check, and logs failures instead of silently swallowing them. Per-video timeout bumped to 15s.
 
 ---
 
