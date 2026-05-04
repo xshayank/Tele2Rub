@@ -311,9 +311,6 @@ async def test_youtube_search_stage_b_uses_cookies() -> None:
                 return {"entries": [flat_entry]}
             return {"upload_date": "20240101", "timestamp": 1704067200}
 
-    import kharej.searchers.youtube as yt_mod_orig
-    cookies_path = yt_mod_orig._COOKIES_PATH
-
     with patch.dict("sys.modules", {"yt_dlp": MagicMock(YoutubeDL=FakeYDL)}):
         from importlib import reload
         import kharej.searchers.youtube as yt_mod
