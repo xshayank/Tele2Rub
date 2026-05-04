@@ -218,10 +218,16 @@ async def thumbnail(
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token expired",
+            detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user_id: str = payload["sub"]
+    user_id: str | None = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     db_result = await session.execute(select(User).where(User.id == user_id))
     user: User | None = db_result.scalar_one_or_none()
     if user is None or user.status != "active":
