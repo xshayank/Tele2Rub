@@ -80,13 +80,6 @@ _YOUTUBE_FORMATS: dict[str, str] = {
     "mp4-360p": "bv*[height<=360]+ba/b[height<=360]/b",
 }
 
-# Fallback format selectors used when the primary selector is not available
-_FALLBACK_VIDEO_FORMAT = "bv*+ba/b"
-_FALLBACK_AUDIO_FORMAT = "bestaudio/best"
-# Progressive formats: 18=360p mp4+aac, 22=720p mp4+aac, then best
-_PROGRESSIVE_FALLBACK_FORMAT = "18/22/b"
-_FORMAT_NOT_AVAILABLE_MSG = "Requested format is not available"
-
 _VALID_QUALITIES: frozenset[str] = frozenset(_YOUTUBE_FORMATS)
 
 _AUDIO_FORMAT = "mp3"
@@ -157,88 +150,15 @@ def _build_command(
     return cmd
 
 
-def _run_progressive_fallback(
-    cmd: list[str],
-    loop: asyncio.AbstractEventLoop,
-    progress_coro_factory,
-    job_id: str,
-    stderr_tail_first: str,
-    stderr_tail_retry: str,
-) -> None:
-    """Attempt a final progressive-format download and raise on failure.
-
-    Used as a last resort for video downloads when both the primary selector
-    and the ``bv*+ba/b`` retry have failed with "Requested format is not available".
-    Tries ``_PROGRESSIVE_FALLBACK_FORMAT`` (``18/22/b``) which targets common
-    progressive mp4 formats that are available on virtually all YouTube videos.
-    """
-    logger.info({"event": "youtube.retry_progressive", "job_id": job_id})
-    prog_cmd = _replace_format_arg(cmd, _PROGRESSIVE_FALLBACK_FORMAT)
-    logger.debug({"event": "youtube.subprocess_cmd_progressive", "cmd": prog_cmd})
-    prog_output = _exec_ytdlp(prog_cmd, loop, progress_coro_factory)
-    if prog_output is not None:
-        stderr_tail_prog = "\n".join(prog_output[-20:])
-        raise RuntimeError(
-            f"yt-dlp failed even after progressive format fallback.\n"
-            f"--- first attempt ---\n{stderr_tail_first}\n"
-            f"--- retry attempt ---\n{stderr_tail_retry}\n"
-            f"--- progressive attempt ---\n{stderr_tail_prog}"
-        )
-
-
 def _run_ytdlp_subprocess(
     cmd: list[str],
     job_id: str,
     loop: asyncio.AbstractEventLoop,
     progress_coro_factory,
-    *,
-    _is_audio: bool = False,
 ) -> None:
-    """Run yt-dlp as a subprocess, parse progress lines, call progress_coro_factory.
-
-    If yt-dlp fails with "Requested format is not available", a single automatic
-    retry is performed using a permissive fallback format selector.
-    """
+    """Run yt-dlp as a subprocess, parse progress lines, call progress_coro_factory."""
     logger.debug({"event": "youtube.subprocess_cmd", "cmd": cmd})
 
-    output_lines = _exec_ytdlp(cmd, loop, progress_coro_factory)
-
-    if output_lines is not None:
-        # First run failed — check for the format-not-available error
-        stderr_tail_first = "\n".join(output_lines[-20:])
-        if _FORMAT_NOT_AVAILABLE_MSG in stderr_tail_first:
-            # Retry with a permissive fallback format
-            logger.info({"event": "youtube.retry_format", "job_id": job_id})
-            fallback_fmt = _FALLBACK_AUDIO_FORMAT if _is_audio else _FALLBACK_VIDEO_FORMAT
-            retry_cmd = _replace_format_arg(cmd, fallback_fmt)
-            logger.debug({"event": "youtube.subprocess_cmd_retry", "cmd": retry_cmd})
-            retry_output = _exec_ytdlp(retry_cmd, loop, progress_coro_factory)
-            if retry_output is not None:
-                stderr_tail_retry = "\n".join(retry_output[-20:])
-                # For video: try progressive formats as a last resort
-                if not _is_audio and _FORMAT_NOT_AVAILABLE_MSG in stderr_tail_retry:
-                    _run_progressive_fallback(
-                        cmd, loop, progress_coro_factory,
-                        job_id, stderr_tail_first, stderr_tail_retry,
-                    )
-                else:
-                    raise RuntimeError(
-                        f"yt-dlp failed even after format fallback retry.\n"
-                        f"--- first attempt ---\n{stderr_tail_first}\n"
-                        f"--- retry attempt ---\n{stderr_tail_retry}"
-                    )
-        else:
-            raise RuntimeError(
-                f"yt-dlp exited with non-zero status:\n{stderr_tail_first}"
-            )
-
-
-def _exec_ytdlp(
-    cmd: list[str],
-    loop: asyncio.AbstractEventLoop,
-    progress_coro_factory,
-) -> list[str] | None:
-    """Execute a yt-dlp command and return output lines on failure, None on success."""
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -266,18 +186,10 @@ def _exec_ytdlp(
 
     process.wait()
     if process.returncode != 0:
-        return output_lines
-    return None
-
-
-def _replace_format_arg(cmd: list[str], new_fmt: str) -> list[str]:
-    """Return a copy of *cmd* with the ``--format`` value replaced by *new_fmt*."""
-    result = list(cmd)
-    for i, arg in enumerate(result):
-        if arg == "--format" and i + 1 < len(result):
-            result[i + 1] = new_fmt
-            return result
-    return result
+        stderr_tail = "\n".join(output_lines[-20:])
+        raise RuntimeError(
+            f"yt-dlp exited with code {process.returncode}:\n{stderr_tail}"
+        )
 
 
 def _resolve_cookies_path(settings: "KharejSettings") -> str | None:
@@ -333,7 +245,6 @@ class YoutubeDownloader:
                 job.job_id,
                 loop,
                 _make_progress,
-                _is_audio=_is_audio_quality(quality),
             )
 
             # Find the downloaded file — prefer most-recently-modified media file
