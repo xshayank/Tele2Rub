@@ -398,6 +398,52 @@ class HealthPong(Envelope):
 
 
 # ---------------------------------------------------------------------------
+# Search messages  (Iran → Kharej and Kharej → Iran)
+# ---------------------------------------------------------------------------
+
+
+class SearchRequest(Envelope):
+    """Request a search from the Kharej worker.  Direction: Iran → Kharej."""
+
+    type: Literal["search.request"] = "search.request"
+
+    request_id: str = Field(..., description="Opaque UUID echoed back in search.result/failed.")
+    platform: Literal["youtube", "spotify", "musicdl"] = Field(
+        ..., description="Which search backend to use."
+    )
+    query: str = Field(..., description="Free-text search query.")
+    limit: int = Field(
+        10, ge=1, le=20, description="Maximum results per category (capped server-side)."
+    )
+
+
+class SearchResult(Envelope):
+    """Search results from the Kharej worker.  Direction: Kharej → Iran."""
+
+    type: Literal["search.result"] = "search.result"
+
+    request_id: str = Field(..., description="Echoed from the corresponding search.request.")
+    platform: str = Field(..., description="Platform that was searched.")
+    results: list[Any] = Field(
+        default_factory=list,
+        description=(
+            "Flat list of result dicts for youtube/musicdl; "
+            "or dict with keys tracks/albums/playlists for spotify."
+        ),
+    )
+
+
+class SearchFailed(Envelope):
+    """Search error from the Kharej worker.  Direction: Kharej → Iran."""
+
+    type: Literal["search.failed"] = "search.failed"
+
+    request_id: str = Field(..., description="Echoed from the corresponding search.request.")
+    platform: str = Field(..., description="Platform that was searched.")
+    error: str = Field(..., description="Human-readable error description.")
+
+
+# ---------------------------------------------------------------------------
 # Discriminated union of all message types
 # ---------------------------------------------------------------------------
 
@@ -417,7 +463,10 @@ AnyMessage = Annotated[
     | AdminCookiesUpdate
     | AdminAck
     | HealthPing
-    | HealthPong,
+    | HealthPong
+    | SearchRequest
+    | SearchResult
+    | SearchFailed,
     Field(discriminator="type"),
 ]
 """Union of every concrete message class, discriminated on the ``type`` field."""

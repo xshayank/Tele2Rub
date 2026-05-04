@@ -34,6 +34,9 @@ from kharej.contracts import (
     JobCancel,
     JobCreate,
     S2ObjectRef,
+    SearchFailed,
+    SearchRequest,
+    SearchResult,
     UserBlockAdd,
     UserBlockRemove,
     UserWhitelistAdd,
@@ -262,6 +265,8 @@ class Dispatcher:
                 await self.handle_admin_clearcache(msg)
             elif isinstance(msg, AdminCookiesUpdate):
                 await self.handle_admin_cookies_update(msg)
+            elif isinstance(msg, SearchRequest):
+                await self.handle_search_request(msg)
             else:
                 logger.info(
                     {"event": "dispatcher.ignored", "type": getattr(msg, "type", "unknown")}
@@ -504,6 +509,82 @@ class Dispatcher:
                 detail=repr(exc),
             )
         await self._rubika.send(ack)
+
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
+    async def handle_search_request(self, msg: SearchRequest) -> None:
+        """Handle a ``search.request`` message: run the search and reply.
+
+        Performs the platform-specific search on the Kharej side and sends
+        either a :class:`~kharej.contracts.SearchResult` or a
+        :class:`~kharej.contracts.SearchFailed` message back to Iran.
+
+        Thumbnails and cover images are uploaded to S3 so that the Iran VPS
+        (which cannot reach external platforms) can serve them via presigned
+        URLs.
+        """
+        logger.info(
+            {
+                "event": "dispatcher.search_request",
+                "request_id": msg.request_id,
+                "platform": msg.platform,
+                "query": msg.query[:80],  # truncate for log safety
+            }
+        )
+        try:
+            results: list | dict
+            if msg.platform == "youtube":
+                from kharej.searchers.youtube import youtube_search  # noqa: PLC0415
+
+                results = await youtube_search(msg.query, limit=msg.limit, s2=self._s2)
+            elif msg.platform == "spotify":
+                from kharej.searchers.spotify import spotify_search  # noqa: PLC0415
+
+                results = await spotify_search(
+                    msg.query,
+                    limit_per_category=min(msg.limit, 5),
+                    s2=self._s2,
+                )
+            elif msg.platform == "musicdl":
+                from kharej.searchers.musicdl import musicdl_search  # noqa: PLC0415
+
+                results = await musicdl_search(msg.query, limit=msg.limit)
+            else:
+                raise ValueError(f"Unsupported search platform: {msg.platform!r}")
+
+            # Spotify returns a dict {tracks, albums, playlists}; wrap it so
+            # SearchResult.results is always a list (union container).
+            reply: SearchResult | SearchFailed = SearchResult(
+                ts=datetime.now(tz=timezone.utc),
+                request_id=msg.request_id,
+                platform=msg.platform,
+                results=results if isinstance(results, list) else [results],
+            )
+            logger.info(
+                {
+                    "event": "dispatcher.search_done",
+                    "request_id": msg.request_id,
+                    "platform": msg.platform,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                {
+                    "event": "dispatcher.search_error",
+                    "request_id": msg.request_id,
+                    "platform": msg.platform,
+                    "error": repr(exc),
+                }
+            )
+            reply = SearchFailed(
+                ts=datetime.now(tz=timezone.utc),
+                request_id=msg.request_id,
+                platform=msg.platform,
+                error=str(exc),
+            )
+        await self._rubika.send(reply)
 
     # ------------------------------------------------------------------
     # Graceful shutdown

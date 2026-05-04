@@ -1,0 +1,315 @@
+{% extends "base.html" %}
+{% block title %}جستجو — RubeTunes{% endblock %}
+{% block content %}
+<h1>🔍 جستجو</h1>
+
+<div class="card">
+  <div id="search-msg"></div>
+  <form id="search-form">
+    <div class="form-group">
+      <label for="query">جستجو</label>
+      <input type="text" id="query" name="query" placeholder="نام آهنگ، هنرمند یا عنوان ویدیو..." required autocomplete="off" />
+    </div>
+    <div class="form-group" style="display:flex; gap:0.75rem; align-items:flex-end; flex-wrap:wrap">
+      <div style="flex:1; min-width:180px">
+        <label for="platform">پلتفرم</label>
+        <select id="platform" name="platform">
+          <option value="youtube">▶️ YouTube</option>
+          <option value="spotify">🎵 Spotify</option>
+          <option value="musicdl">🔍 musicdl</option>
+        </select>
+      </div>
+      <div>
+        <button type="submit" class="btn btn-primary" id="search-btn">جستجو</button>
+      </div>
+    </div>
+  </form>
+</div>
+
+<div id="results-container"></div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+/* ── Search result cards ─────────────────────────────────────────── */
+.result-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+.result-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.15s;
+}
+.result-card:hover { border-color: var(--accent); }
+.result-card .thumb {
+  width: 100%;
+  aspect-ratio: 16/9;
+  object-fit: cover;
+  background: var(--border);
+  display: block;
+}
+.result-card .thumb-sq {
+  width: 100%;
+  aspect-ratio: 1/1;
+  object-fit: cover;
+  background: var(--border);
+  display: block;
+}
+.result-card .thumb-placeholder {
+  width: 100%;
+  aspect-ratio: 1/1;
+  background: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.5rem;
+}
+.result-card .info {
+  padding: 0.6rem 0.75rem;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.result-card .title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  direction: auto;
+}
+.result-card .meta {
+  font-size: 0.78rem;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: auto;
+}
+.result-card .dl-btn {
+  margin: 0 0.75rem 0.75rem;
+  width: calc(100% - 1.5rem);
+  padding: 0.45rem 0;
+  font-size: 0.85rem;
+  background: var(--accent);
+  color: #0f172a;
+  border: none;
+  border-radius: 0.35rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+.result-card .dl-btn:hover { opacity: 0.9; }
+.result-card .dl-btn:disabled { opacity: 0.5; cursor: default; }
+.section-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin: 1.25rem 0 0.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+</style>
+
+<script>
+(function () {
+  var token = window.getToken();
+  if (!token) { window.location.href = '/login'; return; }
+
+  var form     = document.getElementById('search-form');
+  var msgEl    = document.getElementById('search-msg');
+  var resultsEl= document.getElementById('results-container');
+  var btn      = document.getElementById('search-btn');
+
+  // ── Thumbnail helper ────────────────────────────────────────────
+  function thumbUrl(key) {
+    // Use the Iran thumbnail proxy so the browser never touches external URLs.
+    return '/search/thumb?key=' + encodeURIComponent(key);
+  }
+
+  // ── Download helper ─────────────────────────────────────────────
+  async function startDownload(url, platform, jobType) {
+    var quality = platform === 'youtube' ? 'mp4' : 'mp3';
+    var resp = await window.authFetch('/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url, platform: platform, quality: quality, job_type: jobType || 'single' })
+    });
+    if (resp.ok) {
+      var data = await resp.json();
+      window.location.href = '/ui/jobs/' + data.job_id;
+    } else {
+      var err = await resp.json().catch(function() { return {}; });
+      alert('خطا در شروع دانلود: ' + (err.detail || 'خطای ناشناخته'));
+    }
+  }
+
+  // ── YouTube results ─────────────────────────────────────────────
+  function renderYoutube(results) {
+    if (!results || results.length === 0) {
+      return '<p style="color:var(--muted)">نتیجه‌ای یافت نشد.</p>';
+    }
+    var html = '<div class="result-grid">';
+    results.forEach(function(r) {
+      var thumbHtml = r.thumbnail_key
+        ? '<img class="thumb" src="' + thumbUrl(r.thumbnail_key) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">'
+        : '<div class="thumb-placeholder">▶️</div>';
+      html += '<div class="result-card">'
+        + thumbHtml
+        + '<div class="info">'
+        +   '<div class="title" title="' + escHtml(r.title) + '">' + escHtml(r.title) + '</div>'
+        +   '<div class="meta">' + escHtml(r.channel || '') + (r.duration ? ' • ' + r.duration : '') + '</div>'
+        + '</div>'
+        + '<button class="dl-btn" data-url="' + escHtml(r.url) + '" data-platform="youtube">⬇ دانلود</button>'
+        + '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  // ── Spotify results ─────────────────────────────────────────────
+  function renderSpotifyCategory(items, icon, emptyMsg) {
+    if (!items || items.length === 0) {
+      return '<p style="color:var(--muted); font-size:0.9rem; margin-bottom:1rem">' + emptyMsg + '</p>';
+    }
+    var html = '<div class="result-grid">';
+    items.forEach(function(r) {
+      var coverHtml = r.cover_key
+        ? '<img class="thumb-sq" src="' + thumbUrl(r.cover_key) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">'
+        : '<div class="thumb-placeholder">' + icon + '</div>';
+      var title  = r.title || r.name || '';
+      var sub    = r.artists || r.owner || '';
+      var jobType = (r.type === 'track') ? 'single' : 'batch';
+      html += '<div class="result-card">'
+        + coverHtml
+        + '<div class="info">'
+        +   '<div class="title" title="' + escHtml(title) + '">' + escHtml(title) + '</div>'
+        +   (sub ? '<div class="meta">' + escHtml(sub) + '</div>' : '')
+        + '</div>'
+        + '<button class="dl-btn" data-url="' + escHtml(r.url) + '" data-platform="spotify" data-jobtype="' + jobType + '">⬇ دانلود</button>'
+        + '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  function renderSpotify(results) {
+    // results is an array containing one dict {tracks, albums, playlists}
+    var data = (Array.isArray(results) && results.length > 0) ? results[0] : results;
+    if (!data) return '<p style="color:var(--muted)">نتیجه‌ای یافت نشد.</p>';
+    var html = '';
+    html += '<div class="section-title">🎵 آهنگ‌ها</div>'
+          + renderSpotifyCategory(data.tracks, '🎵', 'آهنگی یافت نشد');
+    html += '<div class="section-title">💿 آلبوم‌ها</div>'
+          + renderSpotifyCategory(data.albums, '💿', 'آلبومی یافت نشد');
+    html += '<div class="section-title">📋 پلی‌لیست‌ها</div>'
+          + renderSpotifyCategory(data.playlists, '📋', 'پلی‌لیستی یافت نشد');
+    return html;
+  }
+
+  // ── musicdl results ─────────────────────────────────────────────
+  function renderMusicdl(results) {
+    if (!results || results.length === 0) {
+      return '<p style="color:var(--muted)">نتیجه‌ای یافت نشد.</p>';
+    }
+    var html = '<div class="result-grid">';
+    results.forEach(function(r) {
+      var title = (r.artist ? r.artist + ' — ' : '') + (r.title || '');
+      html += '<div class="result-card">'
+        + '<div class="thumb-placeholder">🔍</div>'
+        + '<div class="info">'
+        +   '<div class="title" title="' + escHtml(title) + '">' + escHtml(title) + '</div>'
+        +   '<div class="meta">'
+        +     escHtml(r.source || '') + (r.duration ? ' • ' + r.duration : '')
+        +   '</div>'
+        + '</div>'
+        + '<button class="dl-btn" data-query="' + escHtml((r.artist ? r.artist + ' ' : '') + (r.title || '')) + '" data-platform="musicdl">⬇ دانلود</button>'
+        + '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  // ── Utilities ───────────────────────────────────────────────────
+  function escHtml(str) {
+    return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function setMsg(html) { msgEl.innerHTML = html; }
+
+  // ── Delegate download button clicks ─────────────────────────────
+  resultsEl.addEventListener('click', function(e) {
+    var btn = e.target.closest('.dl-btn');
+    if (!btn || btn.disabled) return;
+
+    var url      = btn.getAttribute('data-url') || '';
+    var query    = btn.getAttribute('data-query') || '';
+    var platform = btn.getAttribute('data-platform') || 'youtube';
+    var jobType  = btn.getAttribute('data-jobtype') || 'single';
+
+    if (!url && !query) return;
+
+    // musicdl: pass the query as the "url" — musicdl downloader accepts free-text
+    var downloadUrl = url || query;
+    btn.disabled = true;
+    btn.textContent = '...';
+    startDownload(downloadUrl, platform, jobType);
+  });
+
+  // ── Form submit ─────────────────────────────────────────────────
+  form.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    var query    = document.getElementById('query').value.trim();
+    var platform = document.getElementById('platform').value;
+    if (!query) return;
+
+    setMsg('');
+    resultsEl.innerHTML = '';
+    btn.disabled = true;
+    btn.textContent = 'در حال جستجو...';
+
+    try {
+      var resp = await window.authFetch('/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform: platform, query: query, limit: 10 })
+      });
+
+      if (!resp.ok) {
+        var err = await resp.json().catch(function() { return {}; });
+        setMsg('<div class="alert alert-error">' + escHtml(err.detail || 'خطا در جستجو') + '</div>');
+        return;
+      }
+
+      var data = await resp.json();
+      var results = data.results || [];
+
+      var html = '<div class="card">';
+      if (platform === 'youtube') {
+        html += '<h2>نتایج YouTube</h2>' + renderYoutube(results);
+      } else if (platform === 'spotify') {
+        html += '<h2>نتایج Spotify</h2>' + renderSpotify(results);
+      } else {
+        html += '<h2>نتایج musicdl</h2>' + renderMusicdl(results);
+      }
+      html += '</div>';
+      resultsEl.innerHTML = html;
+
+    } catch (ex) {
+      setMsg('<div class="alert alert-error">خطای شبکه: ' + escHtml(String(ex)) + '</div>');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'جستجو';
+    }
+  });
+})();
+</script>
+{% endblock %}
