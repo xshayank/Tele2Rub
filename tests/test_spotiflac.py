@@ -220,12 +220,11 @@ class TestGetQobuzUrlViaStreamProxies:
     def test_delegates_to_existing_helper(self):
         from rubetunes.providers.spotiflac import _get_qobuz_url_via_stream_proxies
 
-        with patch("rubetunes.providers.spotiflac._get_qobuz_stream_url_import", create=True):
-            with patch(
-                "rubetunes.providers.qobuz._get_qobuz_stream_url",
-                return_value="https://s.example.com/track.flac",
-            ):
-                result = _get_qobuz_url_via_stream_proxies("12345", 6)
+        with patch(
+            "rubetunes.providers.qobuz._get_qobuz_stream_url",
+            return_value="https://s.example.com/track.flac",
+        ):
+            result = _get_qobuz_url_via_stream_proxies("12345", 6)
         assert result == "https://s.example.com/track.flac"
 
     def test_returns_none_when_no_url(self):

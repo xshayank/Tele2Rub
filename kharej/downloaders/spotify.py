@@ -225,9 +225,13 @@ async def _download_spotify_track_locally(
         if result is not None:
             return result
 
+    if _prefer_lossless:
+        _sources = "SpotiFLAC (Qobuz/Amazon), musicdl, and yt-dlp"
+    else:
+        _sources = "yt-dlp and musicdl"
     raise RuntimeError(
         f"All download sources failed for track: {artist!r} - {title!r}. "
-        "SpotiFLAC (Qobuz/Amazon), musicdl, and yt-dlp all failed. "
+        f"{_sources} all failed. "
         "Ensure a valid cookies.txt is present and yt-dlp is up to date."
     )
 
