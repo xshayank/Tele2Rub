@@ -48,22 +48,36 @@ logger = logging.getLogger("kharej.downloaders.spotify")
 
 
 _MP3_QUALITIES = {"mp3", "mp3_320", "320"}
-_FLAC_QUALITIES = {"flac", "flac_cd", "flac_hi", "flac_24bit", "24bit", "cd"}
+_FLAC_QUALITIES = {
+    "flac",
+    "flac_cd",
+    "flac_hi",
+    "flac_24bit",
+    "24bit",
+    "cd",
+    "hires",
+    "27",
+    "7",
+    "6",
+}
 
 
 async def _download_spotify_track_locally(
     title: str,
     artist: str,
     quality: str,
-    tmp_dir: "Path",
+    tmp_dir: Path,
     info: dict,
     ytdlp_bin: str = "yt-dlp",
     cookies_path: str | None = None,
-) -> "Path":
+) -> Path:
     """Download a Spotify track locally with quality-based source priority.
 
     Download order:
-    - FLAC qualities (flac, flac_cd, flac_hi, flac_24bit): musicdl first, yt-dlp as backup.
+    - FLAC qualities (flac, flac_cd, flac_hi, flac_24bit, hires, 24bit, cd):
+        1. SpotiFLAC backend (Qobuz via MusicDL/stream-proxies → Amazon via spotbye)
+        2. musicdl (NetEase, QQ Music, …)
+        3. yt-dlp (YouTube search, lossy→FLAC transcode)
     - MP3 / default: yt-dlp first, musicdl as backup.
 
     Returns the local Path of the downloaded audio file.
@@ -71,7 +85,32 @@ async def _download_spotify_track_locally(
     _quality_lower = quality.lower()
     _prefer_lossless = _quality_lower in _FLAC_QUALITIES
 
-    async def _try_ytdlp() -> "Path | None":
+    async def _try_spotiflac() -> Path | None:
+        """Download via SpotiFLAC backend (Qobuz or Amazon). Returns Path or None on failure."""
+        try:
+            from rubetunes.providers.spotiflac import download_spotiflac  # noqa: PLC0415
+
+            result = await asyncio.to_thread(download_spotiflac, info, quality, tmp_dir)
+            if result is not None and result.exists():
+                try:
+                    from rubetunes.tagging import embed_metadata  # noqa: PLC0415
+
+                    embed_metadata(result, info)
+                except Exception as exc:
+                    logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
+                return result
+            logger.info(
+                {
+                    "event": "spotify.spotiflac_no_result",
+                    "qobuz_id": info.get("qobuz_id"),
+                    "amazon_url": info.get("amazon_url"),
+                }
+            )
+        except Exception as exc:
+            logger.warning({"event": "spotify.spotiflac_failed", "error": repr(exc)})
+        return None
+
+    async def _try_ytdlp() -> Path | None:
         """Download via yt-dlp YouTube search. Returns Path or None on failure."""
         try:
             import yt_dlp as _yt_dlp  # noqa: PLC0415
@@ -121,7 +160,7 @@ async def _download_spotify_track_locally(
             logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
         return None
 
-    async def _try_musicdl() -> "Path | None":
+    async def _try_musicdl() -> Path | None:
         """Download via musicdl. Returns Path or None on failure."""
         try:
             from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
@@ -147,15 +186,20 @@ async def _download_spotify_track_locally(
         return None
 
     if _prefer_lossless:
-        # FLAC: musicdl first (lossless sources), yt-dlp as backup
+        # FLAC: SpotiFLAC backend first (Qobuz/Amazon), then musicdl, then yt-dlp
         logger.info(
             {
                 "event": "spotify.download_strategy",
                 "quality": quality,
-                "primary": "musicdl",
+                "primary": "spotiflac",
+                "secondary": "musicdl",
                 "backup": "ytdlp",
             }
         )
+        result = await _try_spotiflac()
+        if result is not None:
+            return result
+        logger.info({"event": "spotify.spotiflac_fallback_to_musicdl", "quality": quality})
         result = await _try_musicdl()
         if result is not None:
             return result
@@ -183,6 +227,7 @@ async def _download_spotify_track_locally(
 
     raise RuntimeError(
         f"All download sources failed for track: {artist!r} - {title!r}. "
+        "SpotiFLAC (Qobuz/Amazon), musicdl, and yt-dlp all failed. "
         "Ensure a valid cookies.txt is present and yt-dlp is up to date."
     )
 
@@ -346,7 +391,12 @@ class SpotifyDownloader:
             logger.info({"event": "spotify.download_start", "job_id": job.job_id})
             artist: str = artists[0] if artists else ""
             audio_path: Path = await _download_spotify_track_locally(
-                title, artist, job.quality or "mp3", tmp_dir, info, ytdlp_bin,
+                title,
+                artist,
+                job.quality or "mp3",
+                tmp_dir,
+                info,
+                ytdlp_bin,
                 cookies_path=cookies_path,
             )
 
@@ -387,10 +437,10 @@ class SpotifyDownloader:
 
     async def _run_collection(
         self,
-        job: "Job",
+        job: Job,
         tracks: list[dict],
-        s2: "S2Client",
-        progress: "ProgressReporter",
+        s2: S2Client,
+        progress: ProgressReporter,
         ytdlp_bin: str,
         cookies_path: str | None,
     ) -> list[S2ObjectRef]:
@@ -467,13 +517,13 @@ class SpotifyDownloader:
 
     @staticmethod
     async def _upload_audio(
-        audio_path: "Path",
+        audio_path: Path,
         job_id: str,
         artists: list[str],
         title: str,
-        s2: "S2Client",
+        s2: S2Client,
         track_index: int | None = None,
-    ) -> "S2ObjectRef":
+    ) -> S2ObjectRef:
         """Upload *audio_path* to S2 and return the ref."""
         ext = audio_path.suffix.lstrip(".")
         artist_part = safe_filename(", ".join(artists)) if artists else ""
