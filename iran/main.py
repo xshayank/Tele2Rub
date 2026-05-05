@@ -110,6 +110,8 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
 
     async def on_job_completed(msg: JobCompleted) -> None:
         """Update job to 'completed', store S2 keys + metadata, publish EventBus."""
+        from iran.api.jobs import _maybe_dequeue_next_job
+
         async with _engine_mod.get_async_session() as session:
             job = await session.get(Job, str(msg.job_id))
             if job is None:
@@ -119,6 +121,8 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
             job.completed_at = datetime.now(tz=timezone.utc)
             job.s2_keys = [p.model_dump() for p in msg.parts]
             job.metadata_json = msg.metadata
+            # A slot opened — promote the next queued job (if any)
+            await _maybe_dequeue_next_job(app.state.rubika_client, session)
         event = {
             "type": "job.completed",
             "job_id": str(msg.job_id),
@@ -130,6 +134,8 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
 
     async def on_job_failed(msg: JobFailed) -> None:
         """Update job to 'failed', store error details, publish EventBus."""
+        from iran.api.jobs import _maybe_dequeue_next_job
+
         async with _engine_mod.get_async_session() as session:
             job = await session.get(Job, str(msg.job_id))
             if job is None:
@@ -138,6 +144,8 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
             job.status = "failed"
             job.error_code = msg.error_code
             job.error_msg = msg.message
+            # A slot opened — promote the next queued job (if any)
+            await _maybe_dequeue_next_job(app.state.rubika_client, session)
         event = {
             "type": "job.failed",
             "job_id": str(msg.job_id),

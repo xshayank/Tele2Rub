@@ -465,6 +465,8 @@ async def force_cancel_job(
     admin: User = Depends(_require_admin),
 ) -> None:
     """Force-cancel any job regardless of owner."""
+    from iran.api.jobs import _maybe_dequeue_next_job
+
     job = await session.get(Job, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -472,10 +474,15 @@ async def force_cancel_job(
         raise HTTPException(status_code=409, detail="Job is already in a terminal state")
 
     rubika = _rubika(request)
-    msg = JobCancel(ts=datetime.now(tz=timezone.utc), job_id=job_id)
-    await rubika.send(msg)
+    # Only send JobCancel to kharej if the job was already dispatched (not just queued)
+    if job.status != "queued":
+        msg = JobCancel(ts=datetime.now(tz=timezone.utc), job_id=job_id)
+        await rubika.send(msg)
     job.status = "cancelled"
     _audit(session, admin.id, "admin.job.cancel", job_id)
+
+    # A slot may have opened — promote the next queued job (if any)
+    await _maybe_dequeue_next_job(rubika, session)
 
 
 # ---------------------------------------------------------------------------

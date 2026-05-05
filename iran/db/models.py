@@ -135,6 +135,9 @@ class Job(Base):
     phase: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Optional metadata for queueing (format hint for yt-dlp; batch collection name)
+    format_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    collection_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     # list[S2ObjectRef-as-dict]; stored as JSON
     s2_keys: Mapped[Any | None] = mapped_column(JSON, nullable=True)
     total_tracks: Mapped[int | None] = mapped_column(Integer, nullable=True)
