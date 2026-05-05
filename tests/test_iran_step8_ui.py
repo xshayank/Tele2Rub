@@ -250,6 +250,27 @@ class TestUIPageContent:
         assert "/settings" in resp.text
         assert "/login" in resp.text
 
+    @pytest.mark.asyncio
+    async def test_home_contains_logo_svg(self, client):
+        """Home page HTML must reference at least one of the logo SVG files."""
+        resp = await client.get("/")
+        assert resp.status_code == 200
+        assert "rube_desktop.svg" in resp.text or "rube_mobile.svg" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_static_mobile_svg_ok(self, client):
+        """GET /static/rube_mobile.svg must return 200 with image/svg+xml."""
+        resp = await client.get("/static/rube_mobile.svg")
+        assert resp.status_code == 200
+        assert "image/svg+xml" in resp.headers["content-type"]
+
+    @pytest.mark.asyncio
+    async def test_static_desktop_svg_ok(self, client):
+        """GET /static/rube_desktop.svg must return 200 with image/svg+xml."""
+        resp = await client.get("/static/rube_desktop.svg")
+        assert resp.status_code == 200
+        assert "image/svg+xml" in resp.headers["content-type"]
+
 
 # ---------------------------------------------------------------------------
 # Tests: SSE endpoint integration (existing API unchanged)
