@@ -76,13 +76,6 @@ function fmtDate(iso) {
   return iso.slice(0, 10);
 }
 
-function jobLimitCell(u) {
-  if (u.job_limit == null) return '<span style="color:var(--muted)">—</span>';
-  const exp = u.job_limit_expires_at ? u.job_limit_expires_at.slice(0,10) : '∞';
-  const expired = u.job_limit_expires_at && new Date(u.job_limit_expires_at) < new Date();
-  return `${u.job_limit} جاب${expired ? ' <span style="color:var(--error)">(منقضی)</span>' : ''}`;
-}
-
 async function loadUsers() {
   const status = document.getElementById('filter-status').value;
   const role = document.getElementById('filter-role').value;
@@ -148,11 +141,13 @@ function closeModal() {
 }
 
 async function submitJobLimit() {
+  if (!modalUserId) return;
   const limit = parseInt(document.getElementById('jl-limit').value, 10);
   const days = parseInt(document.getElementById('jl-days').value, 10);
   if (!limit || !days) return;
+  const uid = modalUserId;
   closeModal();
-  await patchUser(modalUserId ?? '', 'set_job_limit', { job_limit: limit, days });
+  await patchUser(uid, 'set_job_limit', { job_limit: limit, days });
 }
 
 loadUsers();

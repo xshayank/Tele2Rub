@@ -183,8 +183,6 @@ async def get_user(
     # the active quota period.
     quota_used: int | None = None
     if user.job_limit is not None:
-        from datetime import timezone
-
         now = datetime.now(tz=timezone.utc)
         expires_at = user.job_limit_expires_at
         period_active = expires_at is None or (
@@ -276,8 +274,8 @@ async def patch_user(
             _audit(session, admin.id, "admin.user.delete", user_id)
 
     elif action == "set_job_limit":
-        if body.job_limit is None or body.job_limit < 0:
-            raise HTTPException(status_code=422, detail="job_limit must be a non-negative integer")
+        if body.job_limit is None or body.job_limit <= 0:
+            raise HTTPException(status_code=422, detail="job_limit must be a positive integer")
         if body.days is None or body.days <= 0:
             raise HTTPException(status_code=422, detail="days must be a positive integer")
         user.job_limit = body.job_limit
