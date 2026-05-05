@@ -1008,3 +1008,194 @@ class TestErrorCodeMessages:
         )
         data = _job_to_response(job)
         assert data["error_message"] == ERROR_CODE_MESSAGES["download_timeout"]
+
+
+# ===========================================================================
+# Concurrent-job queue
+# ===========================================================================
+
+
+async def _seed_setting(session_factory, key: str, value: str) -> None:
+    """Upsert a key/value setting row."""
+    from iran.db.models import Setting
+
+    async with session_factory() as session:
+        row = await session.get(Setting, key)
+        if row is None:
+            session.add(Setting(key=key, value=value))
+        else:
+            row.value = value
+        await session.commit()
+
+
+class TestJobQueue:
+    """Tests for the MAX_CONCURRENT_JOBS queue and per-user 1-job-at-a-time limit."""
+
+    @pytest.mark.asyncio
+    async def test_second_active_job_returns_429(self, client):
+        """A user who already has an active job is rejected with 429."""
+        http_client, transport, session_factory = client
+        user = await _seed_user(session_factory, email="queue_dup@example.com")
+        token = await _get_token(http_client, email=user["email"], password=user["password"])
+
+        # First job — should succeed
+        resp1 = await http_client.post(
+            "/jobs",
+            json={"url": "https://open.spotify.com/track/abc", "platform": "spotify"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp1.status_code == 202
+
+        # Second job — the first is still active → 429
+        resp2 = await http_client.post(
+            "/jobs",
+            json={"url": "https://open.spotify.com/track/xyz", "platform": "spotify"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp2.status_code == 429
+        assert "already have a job" in resp2.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_admin_bypasses_per_user_limit(self, client):
+        """Admin users are not subject to the 1-active-job-at-a-time restriction."""
+        http_client, transport, session_factory = client
+        admin = await _seed_user(
+            session_factory, email="queue_admin@example.com", role="admin"
+        )
+        token = await _get_token(http_client, email=admin["email"], password=admin["password"])
+
+        for _ in range(3):
+            resp = await http_client.post(
+                "/jobs",
+                json={"url": "https://open.spotify.com/track/abc", "platform": "spotify"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 202
+
+    @pytest.mark.asyncio
+    async def test_job_queued_when_concurrent_limit_reached(self, client):
+        """When MAX_CONCURRENT_JOBS=1 and a job is running, the next is queued."""
+        http_client, transport, session_factory = client
+
+        # Set limit to 1 concurrent job
+        await _seed_setting(session_factory, "MAX_CONCURRENT_JOBS", "1")
+
+        # Seed a running job for a different user to fill the slot
+        other = await _seed_user(session_factory, email="queue_other@example.com")
+        await _seed_job(session_factory, user_id=other["id"], status="running")
+
+        user = await _seed_user(session_factory, email="queue_user@example.com")
+        token = await _get_token(http_client, email=user["email"], password=user["password"])
+
+        resp = await http_client.post(
+            "/jobs",
+            json={"url": "https://open.spotify.com/track/abc", "platform": "spotify"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["status"] == "queued"
+
+        # No JobCreate should have been dispatched to kharej
+        # (transport.sent contains messages from all users; the seeded job didn't use it)
+        assert not any(
+            '"job.create"' in wire for _, wire in transport.sent
+        ), "Queued job must not be dispatched immediately"
+
+    @pytest.mark.asyncio
+    async def test_job_dispatched_immediately_when_below_limit(self, client):
+        """When running jobs < MAX_CONCURRENT_JOBS, the job is dispatched right away."""
+        http_client, transport, session_factory = client
+
+        await _seed_setting(session_factory, "MAX_CONCURRENT_JOBS", "3")
+
+        user = await _seed_user(session_factory, email="queue_below@example.com")
+        token = await _get_token(http_client, email=user["email"], password=user["password"])
+
+        resp = await http_client.post(
+            "/jobs",
+            json={"url": "https://open.spotify.com/track/abc", "platform": "spotify"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "pending"
+        assert any('"job.create"' in wire for _, wire in transport.sent)
+
+    @pytest.mark.asyncio
+    async def test_no_limit_dispatches_immediately(self, client):
+        """When MAX_CONCURRENT_JOBS=0 (unlimited), every job is dispatched immediately."""
+        http_client, transport, session_factory = client
+
+        # Ensure no limit is set (default 0)
+        await _seed_setting(session_factory, "MAX_CONCURRENT_JOBS", "0")
+
+        user = await _seed_user(session_factory, email="queue_nolimit@example.com")
+        token = await _get_token(http_client, email=user["email"], password=user["password"])
+
+        resp = await http_client.post(
+            "/jobs",
+            json={"url": "https://open.spotify.com/track/abc", "platform": "spotify"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 202
+        assert resp.json()["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_cancel_queued_job_does_not_send_cancel_to_kharej(self, client):
+        """Cancelling a still-queued job must not send a JobCancel to kharej."""
+        http_client, transport, session_factory = client
+        user = await _seed_user(session_factory, email="queue_cancel@example.com")
+        token = await _get_token(http_client, email=user["email"], password=user["password"])
+
+        # Seed a queued job directly
+        job_id = await _seed_job(session_factory, user_id=user["id"], status="queued")
+
+        before_sent = len(transport.sent)
+        resp = await http_client.delete(
+            f"/jobs/{job_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 204
+        # No additional message should have been sent
+        assert len(transport.sent) == before_sent
+
+    @pytest.mark.asyncio
+    async def test_dequeue_on_cancel(self, client):
+        """Cancelling an active job should promote the next queued job."""
+        http_client, transport, session_factory = client
+
+        await _seed_setting(session_factory, "MAX_CONCURRENT_JOBS", "1")
+
+        user_a = await _seed_user(session_factory, email="dq_a@example.com")
+        user_b = await _seed_user(session_factory, email="dq_b@example.com")
+
+        # user_a has a running job (fills the slot)
+        running_job_id = await _seed_job(session_factory, user_id=user_a["id"], status="running")
+        # user_b has a queued job (waiting)
+        queued_job_id = await _seed_job(session_factory, user_id=user_b["id"], status="queued")
+
+        token_a = await _get_token(
+            http_client, email=user_a["email"], password=user_a["password"]
+        )
+
+        before_sent = len(transport.sent)
+
+        # Cancel user_a's running job — a slot opens up
+        resp = await http_client.delete(
+            f"/jobs/{running_job_id}",
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+        assert resp.status_code == 204
+
+        # The queued job should now have been dispatched (a new JobCreate sent)
+        new_messages = [wire for _, wire in transport.sent[before_sent:]]
+        assert any(
+            '"job.create"' in wire and queued_job_id in wire for wire in new_messages
+        ), f"Expected dequeued job {queued_job_id} in sent messages: {new_messages}"
+
+        # DB status of the queued job should now be 'pending'
+        from iran.db.models import Job
+
+        async with session_factory() as session:
+            job = await session.get(Job, queued_job_id)
+        assert job.status == "pending"

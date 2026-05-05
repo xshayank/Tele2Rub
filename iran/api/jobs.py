@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from iran.api.deps import get_current_user, get_db
 from iran.contracts import JobCancel, JobCreate, Platform
-from iran.db.models import AuditLog, Job
+from iran.db.models import AuditLog, Job, Setting
 
 logger = logging.getLogger("iran.api.jobs")
 
@@ -179,6 +179,90 @@ async def _check_rate_limit(user_id: str, session: AsyncSession) -> None:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"Rate limit exceeded: at most {max_jobs} jobs per hour.",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Concurrent-jobs queue helpers
+# ---------------------------------------------------------------------------
+
+_DEFAULT_MAX_CONCURRENT_JOBS = 0  # 0 = unlimited
+
+
+async def _get_max_concurrent_jobs(session: AsyncSession) -> int:
+    """Return MAX_CONCURRENT_JOBS from settings (0 = unlimited, never queues)."""
+    row = await session.get(Setting, "MAX_CONCURRENT_JOBS")
+    if row is not None:
+        try:
+            return max(0, int(row.value))
+        except (ValueError, TypeError):
+            pass
+    return _DEFAULT_MAX_CONCURRENT_JOBS
+
+
+async def _check_user_active_job(user_id: str, session: AsyncSession) -> bool:
+    """Return True if the user already has a non-terminal job (incl. queued)."""
+    result = await session.execute(
+        select(func.count(Job.id)).where(
+            Job.user_id == user_id,
+            Job.status.in_(["pending", "accepted", "running", "queued"]),
+        )
+    )
+    return result.scalar_one() > 0
+
+
+async def _get_running_job_count(session: AsyncSession) -> int:
+    """Return count of jobs already dispatched to kharej (pending/accepted/running)."""
+    result = await session.execute(
+        select(func.count(Job.id)).where(
+            Job.status.in_(["pending", "accepted", "running"]),
+        )
+    )
+    return result.scalar_one()
+
+
+async def _maybe_dequeue_next_job(rubika_client: Any, session: AsyncSession) -> None:
+    """Promote the oldest queued job to pending and dispatch it if there is capacity.
+
+    Called whenever a job reaches a terminal state so the next job in line can
+    be sent to the kharej worker.
+    """
+    max_concurrent = await _get_max_concurrent_jobs(session)
+    running_count = await _get_running_job_count(session)
+    if max_concurrent > 0 and running_count >= max_concurrent:
+        return  # Still at full capacity
+
+    # Pick the oldest waiting job (FIFO).
+    result = await session.execute(
+        select(Job).where(Job.status == "queued").order_by(Job.created_at.asc()).limit(1)
+    )
+    job = result.scalar_one_or_none()
+    if job is None:
+        return  # Queue is empty
+
+    job.status = "pending"
+    msg = JobCreate(
+        v=1,
+        type="job.create",
+        ts=datetime.now(tz=timezone.utc),
+        job_id=job.id,
+        user_id=job.user_id,
+        user_status="active",
+        platform=Platform(job.platform),
+        url=job.url,
+        quality=job.quality or "mp3",
+        job_type=job.job_type,  # type: ignore[arg-type]
+        format_hint=job.format_hint,
+        collection_name=job.collection_name,
+        total_tracks=job.total_tracks,
+    )
+    try:
+        await rubika_client.send(msg)
+        logger.info("Queued job dispatched", extra={"job_id": job.id, "user_id": job.user_id})
+    except Exception as exc:
+        logger.error(
+            "Failed to dispatch queued job",
+            extra={"job_id": job.id, "error": str(exc)},
         )
 
 
@@ -351,7 +435,24 @@ async def create_job(
     if current_user.role != "admin":
         await _check_job_quota(current_user, session)
 
-    # 3. Generate job_id and insert DB row
+    # 2c. Per-user 1-active-job limit: discard extras (admin exempt)
+    if current_user.role != "admin":
+        if await _check_user_active_job(current_user.id, session):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="You already have a job in progress. Please wait for it to finish.",
+            )
+
+    # 3. Determine initial status: queue if global concurrent limit is reached
+    rubika_client = request.app.state.rubika_client
+    max_concurrent = await _get_max_concurrent_jobs(session)
+    if max_concurrent > 0 and current_user.role != "admin":
+        running_count = await _get_running_job_count(session)
+        job_status = "queued" if running_count >= max_concurrent else "pending"
+    else:
+        job_status = "pending"
+
+    # 4. Generate job_id and insert DB row
     job_id = str(uuid.uuid4())
     job = Job(
         id=job_id,
@@ -360,37 +461,45 @@ async def create_job(
         url=body.url,
         quality=body.quality,
         job_type=body.job_type,
-        status="pending",
-    )
-    session.add(job)
-
-    # 4. Build and send JobCreate over Rubika
-    msg = JobCreate(
-        v=1,
-        type="job.create",
-        ts=datetime.now(tz=timezone.utc),
-        job_id=job_id,
-        user_id=current_user.id,
-        user_status="admin" if current_user.role == "admin" else "active",
-        platform=body.platform,
-        url=body.url,
-        quality=body.quality,
-        job_type=body.job_type,  # type: ignore[arg-type]
         format_hint=body.format_hint,
         collection_name=body.collection_name,
         total_tracks=body.total_tracks,
+        status=job_status,
     )
-    rubika_client = request.app.state.rubika_client
-    try:
-        await rubika_client.send(msg)
-    except Exception as exc:
-        logger.error(
-            "Failed to send JobCreate to Rubika",
-            extra={"job_id": job_id, "error": str(exc)},
-        )
-        # Still persist the job — it can be retried; do not block the response.
+    session.add(job)
 
-    # 5. Audit log
+    # 5. Dispatch to kharej only if the job is not queued
+    if job_status == "pending":
+        msg = JobCreate(
+            v=1,
+            type="job.create",
+            ts=datetime.now(tz=timezone.utc),
+            job_id=job_id,
+            user_id=current_user.id,
+            user_status="admin" if current_user.role == "admin" else "active",
+            platform=body.platform,
+            url=body.url,
+            quality=body.quality,
+            job_type=body.job_type,  # type: ignore[arg-type]
+            format_hint=body.format_hint,
+            collection_name=body.collection_name,
+            total_tracks=body.total_tracks,
+        )
+        try:
+            await rubika_client.send(msg)
+        except Exception as exc:
+            logger.error(
+                "Failed to send JobCreate to Rubika",
+                extra={"job_id": job_id, "error": str(exc)},
+            )
+            # Still persist the job — it can be retried; do not block the response.
+    else:
+        logger.info(
+            "Job queued (concurrent limit reached)",
+            extra={"job_id": job_id, "user_id": current_user.id, "max_concurrent": max_concurrent},
+        )
+
+    # 6. Audit log
     session.add(
         AuditLog(
             actor_id=current_user.id,
@@ -401,6 +510,7 @@ async def create_job(
                 "url": body.url,
                 "quality": body.quality,
                 "job_type": body.job_type,
+                "queued": job_status == "queued",
             },
             ip_addr=_get_client_ip(request),
         )
@@ -408,9 +518,14 @@ async def create_job(
 
     logger.info(
         "Job created",
-        extra={"job_id": job_id, "user_id": current_user.id, "platform": body.platform.value},
+        extra={
+            "job_id": job_id,
+            "user_id": current_user.id,
+            "platform": body.platform.value,
+            "status": job_status,
+        },
     )
-    return {"job_id": job_id}
+    return {"job_id": job_id, "status": job_status}
 
 
 # ---------------------------------------------------------------------------
@@ -490,24 +605,27 @@ async def cancel_job(
             detail=f"Job is already in terminal state: {job.status}.",
         )
 
-    # Send JobCancel over Rubika
-    msg = JobCancel(
-        v=1,
-        type="job.cancel",
-        ts=datetime.now(tz=timezone.utc),
-        job_id=job_id,
-    )
-    rubika_client = request.app.state.rubika_client
-    try:
-        await rubika_client.send(msg)
-    except Exception as exc:
-        logger.error(
-            "Failed to send JobCancel to Rubika",
-            extra={"job_id": job_id, "error": str(exc)},
-        )
-
     # Capture previous status before mutating
     previous_status = job.status
+
+    rubika_client = request.app.state.rubika_client
+
+    # Only send JobCancel to kharej if the job was already dispatched.
+    # Queued jobs were never sent, so there's nothing to cancel on the worker.
+    if previous_status != "queued":
+        msg = JobCancel(
+            v=1,
+            type="job.cancel",
+            ts=datetime.now(tz=timezone.utc),
+            job_id=job_id,
+        )
+        try:
+            await rubika_client.send(msg)
+        except Exception as exc:
+            logger.error(
+                "Failed to send JobCancel to Rubika",
+                extra={"job_id": job_id, "error": str(exc)},
+            )
 
     # Update DB
     job.status = "cancelled"
@@ -522,6 +640,9 @@ async def cancel_job(
     )
 
     logger.info("Job cancelled", extra={"job_id": job_id, "user_id": current_user.id})
+
+    # A slot opened up — promote the next queued job (if any)
+    await _maybe_dequeue_next_job(rubika_client, session)
 
 
 # ---------------------------------------------------------------------------
