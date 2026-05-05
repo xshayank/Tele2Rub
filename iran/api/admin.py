@@ -26,7 +26,7 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
@@ -73,8 +73,10 @@ async def _require_admin(current_user: User = Depends(get_current_user)) -> User
 
 
 class PatchUserRequest(BaseModel):
-    action: str  # "approve" | "block" | "delete" | "unblock"
+    action: str  # "approve" | "block" | "delete" | "unblock" | "set_job_limit" | "reset_job_limit" | "clear_job_limit"
     reason: str | None = None
+    job_limit: int | None = None  # used by set_job_limit
+    days: int | None = None  # used by set_job_limit
 
 
 class PatchRegistrationRequest(BaseModel):
@@ -145,6 +147,64 @@ def _user_dict(u: User) -> dict:
         "status": u.status,
         "created_at": u.created_at.isoformat() if u.created_at else None,
         "last_seen_at": u.last_seen_at.isoformat() if u.last_seen_at else None,
+        "job_limit": u.job_limit,
+        "job_limit_start_at": u.job_limit_start_at.isoformat() if u.job_limit_start_at else None,
+        "job_limit_expires_at": u.job_limit_expires_at.isoformat() if u.job_limit_expires_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /admin/users/{id}
+# ---------------------------------------------------------------------------
+
+
+@router.get("/users/{user_id}")
+async def get_user(
+    user_id: str,
+    session: AsyncSession = Depends(get_db),
+    _admin: User = Depends(_require_admin),
+) -> dict:
+    """Return full details for a single user including job-limit usage."""
+    from iran.db.models import Job
+
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Count jobs by status for this user.
+    result = await session.execute(
+        select(Job.status, func.count(Job.id))
+        .where(Job.user_id == user_id)
+        .group_by(Job.status)
+    )
+    status_counts: dict[str, int] = {row[0]: row[1] for row in result.all()}
+
+    # Count jobs that count toward the quota (not failed or cancelled) within
+    # the active quota period.
+    quota_used: int | None = None
+    if user.job_limit is not None:
+        now = datetime.now(tz=timezone.utc)
+        expires_at = user.job_limit_expires_at
+        period_active = expires_at is None or (
+            (expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at)
+            >= now
+        )
+        if period_active:
+            q = select(func.count(Job.id)).where(
+                Job.user_id == user_id,
+                Job.status.not_in(["failed", "cancelled"]),
+            )
+            if user.job_limit_start_at is not None:
+                start_at = user.job_limit_start_at
+                if start_at.tzinfo is None:
+                    start_at = start_at.replace(tzinfo=timezone.utc)
+                q = q.where(Job.created_at >= start_at)
+            quota_used = (await session.execute(q)).scalar_one()
+
+    return {
+        **_user_dict(user),
+        "job_counts": status_counts,
+        "quota_used": quota_used,
     }
 
 
@@ -161,55 +221,86 @@ async def patch_user(
     session: AsyncSession = Depends(get_db),
     admin: User = Depends(_require_admin),
 ) -> dict:
-    """Approve, block, unblock, or delete a user."""
+    """Approve, block, unblock, delete a user, or manage their job quota."""
     user = await session.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    rubika = _rubika(request)
     now = datetime.now(tz=timezone.utc)
     action = body.action
 
-    if action == "approve":
-        user.status = "active"
-        msg = UserWhitelistAdd(
-            ts=now,
-            job_id=None,
-            user_id=user_id,
-            display_name=user.display_name,
-        )
-        await rubika.send(msg)
-        _audit(session, admin.id, "admin.user.approve", user_id)
+    if action in ("approve", "block", "unblock", "delete"):
+        rubika = _rubika(request)
 
-    elif action == "block":
-        user.status = "blocked"
-        msg = UserBlockAdd(
-            ts=now,
-            job_id=None,
-            user_id=user_id,
-            reason=body.reason,
-        )
-        await rubika.send(msg)
-        _audit(session, admin.id, "admin.user.block", user_id)
-
-    elif action == "unblock":
-        user.status = "active"
-        msg = UserWhitelistAdd(
-            ts=now,
-            job_id=None,
-            user_id=user_id,
-            display_name=user.display_name,
-        )
-        await rubika.send(msg)
-        _audit(session, admin.id, "admin.user.unblock", user_id)
-
-    elif action == "delete":
-        was_active = user.status == "active"
-        user.status = "deleted"
-        if was_active:
-            msg = UserWhitelistRemove(ts=now, job_id=None, user_id=user_id)
+        if action == "approve":
+            user.status = "active"
+            msg = UserWhitelistAdd(
+                ts=now,
+                job_id=None,
+                user_id=user_id,
+                display_name=user.display_name,
+            )
             await rubika.send(msg)
-        _audit(session, admin.id, "admin.user.delete", user_id)
+            _audit(session, admin.id, "admin.user.approve", user_id)
+
+        elif action == "block":
+            user.status = "blocked"
+            msg = UserBlockAdd(
+                ts=now,
+                job_id=None,
+                user_id=user_id,
+                reason=body.reason,
+            )
+            await rubika.send(msg)
+            _audit(session, admin.id, "admin.user.block", user_id)
+
+        elif action == "unblock":
+            user.status = "active"
+            msg = UserWhitelistAdd(
+                ts=now,
+                job_id=None,
+                user_id=user_id,
+                display_name=user.display_name,
+            )
+            await rubika.send(msg)
+            _audit(session, admin.id, "admin.user.unblock", user_id)
+
+        elif action == "delete":
+            was_active = user.status == "active"
+            user.status = "deleted"
+            if was_active:
+                msg = UserWhitelistRemove(ts=now, job_id=None, user_id=user_id)
+                await rubika.send(msg)
+            _audit(session, admin.id, "admin.user.delete", user_id)
+
+    elif action == "set_job_limit":
+        if body.job_limit is None or body.job_limit <= 0:
+            raise HTTPException(status_code=422, detail="job_limit must be a positive integer")
+        if body.days is None or body.days <= 0:
+            raise HTTPException(status_code=422, detail="days must be a positive integer")
+        user.job_limit = body.job_limit
+        user.job_limit_start_at = now
+        user.job_limit_expires_at = now + timedelta(days=body.days)
+        _audit(
+            session,
+            admin.id,
+            "admin.user.set_job_limit",
+            user_id,
+            payload={"job_limit": body.job_limit, "days": body.days},
+        )
+
+    elif action == "reset_job_limit":
+        # Reset the period start to now; the counter effectively goes to 0.
+        if user.job_limit is None:
+            raise HTTPException(status_code=409, detail="User has no job limit set")
+        user.job_limit_start_at = now
+        _audit(session, admin.id, "admin.user.reset_job_limit", user_id)
+
+    elif action == "clear_job_limit":
+        user.job_limit = None
+        user.job_limit_start_at = None
+        user.job_limit_expires_at = None
+        _audit(session, admin.id, "admin.user.clear_job_limit", user_id)
 
     else:
         raise HTTPException(status_code=422, detail=f"Unknown action: {action!r}")
