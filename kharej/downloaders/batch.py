@@ -7,8 +7,10 @@ parts when the total exceeds a size threshold) and uploading the parts to S2.
 
 Flow
 ----
-1. Resolve the list of track URLs from ``job.payload.track_ids`` (or a mock
-   list when ``track_ids`` is absent, so the plumbing is testable independently).
+1. Resolve the list of track URLs from the collection URL in ``job.url``.
+   Iran always sends ``track_ids=None``; the Kharej worker calls the platform
+   API (Spotify GraphQL for Spotify playlists/albums, yt-dlp for YouTube
+   playlists) to obtain the full track list.
 2. Run the appropriate per-platform downloader for each track with bounded
    concurrency (``Settings.get_int("download_concurrency", 2)``).
 3. Emit ``job.progress`` after each track completes (monotonically increasing
@@ -109,22 +111,20 @@ class BatchDownloader:
         6. Return ``list[S2ObjectRef]``.
         """
         payload = job.payload
-        collection_name: str = payload.collection_name or safe_filename(job.url) or "batch"
-        track_ids: list[str] = list(payload.track_ids or [])
-        total_tracks: int = payload.total_tracks or len(track_ids)
 
-        # When no track_ids were provided (e.g. very large collections), use a
-        # single-item mock list so the plumbing is still exercised.
-        if not track_ids:
-            logger.warning(
-                {
-                    "event": "batch.no_track_ids",
-                    "job_id": job.job_id,
-                    "note": "track_ids absent; using empty list",
-                }
-            )
-            track_ids = []
-            total_tracks = 0
+        # Iran always sends track_ids=None.  Resolve the track list from the
+        # collection URL here on Kharej using the platform API.
+        if payload.track_ids is not None:
+            # Backward-compatibility path: track_ids were pre-populated
+            # (not expected in production, but kept for test convenience).
+            track_ids: list[str] = list(payload.track_ids)
+            collection_name: str = payload.collection_name or safe_filename(job.url) or "batch"
+            total_tracks: int = payload.total_tracks or len(track_ids)
+        else:
+            # Normal production path: resolve from the URL via the platform API.
+            resolved_name, track_ids = await _resolve_track_urls(job.platform, job.url)
+            collection_name = payload.collection_name or resolved_name or safe_filename(job.url) or "batch"
+            total_tracks = len(track_ids)
 
         concurrency: int = settings.get_int("download_concurrency", _DEFAULT_CONCURRENCY)
         enable_split: bool = settings.get_bool("enable_zip_split", False)
@@ -238,9 +238,9 @@ class BatchDownloader:
                 )
                 return None
 
-            # Build track URLs from track_ids — for Spotify the URL is
-            # constructed from the track ID; for YouTube it is the track ID
-            # itself (already a URL when sent by Track B).
+            # Build per-track download URLs from track IDs.
+            # For Spotify the URL is constructed from the bare track ID;
+            # for YouTube the ID is the video ID, converted to a youtu.be URL.
             track_urls: list[str] = _build_track_urls(job.platform, track_ids, job.url)
 
             # Run downloads concurrently.
@@ -355,8 +355,8 @@ def _build_track_urls(platform: str, track_ids: list[str], collection_url: str) 
     """Convert a list of platform-specific track IDs into download URLs.
 
     For Spotify the URL is ``https://open.spotify.com/track/{id}``.
-    For YouTube the track ID is the full URL (as sent by Track B), or we
-    construct a ``youtu.be/{id}`` URL when only a bare ID is present.
+    For YouTube the track ID is the video ID; we construct a ``youtu.be/{id}``
+    URL unless a full HTTP URL was already provided.
     For unknown platforms the IDs are passed through unchanged.
     """
     if platform == "spotify":
@@ -368,6 +368,125 @@ def _build_track_urls(platform: str, track_ids: list[str], collection_url: str) 
         ]
     # Generic fallback: pass through as-is.
     return list(track_ids)
+
+
+# ---------------------------------------------------------------------------
+# Collection URL resolvers — called when Iran sends track_ids=None
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_track_urls(platform: str, url: str) -> tuple[str, list[str]]:
+    """Resolve a batch/collection URL into (collection_name, list_of_track_ids).
+
+    Called by :meth:`BatchDownloader.run` when Iran sends ``track_ids=None``
+    (which is always the case in production).  The returned IDs are bare
+    platform IDs that are subsequently converted to per-track download URLs by
+    :func:`_build_track_urls`.
+
+    Parameters
+    ----------
+    platform:
+        Platform string, e.g. ``"spotify"`` or ``"youtube"``.
+    url:
+        The collection URL as sent by Iran (playlist, album, etc.).
+
+    Returns
+    -------
+    tuple[str, list[str]]
+        ``(collection_name, [track_id, ...])``
+
+    Raises
+    ------
+    ValueError
+        When *platform* is not supported for batch URL resolution.
+    RuntimeError
+        When the platform API call fails or required libraries are missing.
+    """
+    if platform == "spotify":
+        return await asyncio.to_thread(_resolve_spotify_track_ids, url)
+    if platform == "youtube":
+        return await asyncio.to_thread(_resolve_youtube_video_ids, url)
+    raise ValueError(
+        f"Batch URL resolution is not supported for platform {platform!r}. "
+        "Only 'spotify' and 'youtube' playlists/albums can be resolved by Kharej. "
+        "For other platforms, Iran must supply track_ids in the job.create message."
+    )
+
+
+def _resolve_spotify_track_ids(url: str) -> tuple[str, list[str]]:
+    """Blocking: parse a Spotify playlist or album URL and return (name, track_ids).
+
+    Calls the Spotify GraphQL pathfinder API (``api-partner.spotify.com``)
+    via the ``spotify_dl`` shim.  Handles pagination internally.
+
+    Parameters
+    ----------
+    url:
+        A Spotify playlist URL (``open.spotify.com/playlist/...``) or album
+        URL (``open.spotify.com/album/...``).
+
+    Returns
+    -------
+    tuple[str, list[str]]
+        ``(collection_name, [track_id, ...])``
+    """
+    try:
+        import spotify_dl as _spodl  # noqa: PLC0415
+    except ImportError as exc:
+        raise RuntimeError(
+            "spotify_dl shim is not importable; ensure the rubetunes package is installed"
+        ) from exc
+
+    playlist_id: str | None = _spodl.parse_spotify_playlist_id(url)
+    if playlist_id:
+        info, track_ids = _spodl.get_spotify_playlist_tracks(playlist_id)
+        return info.get("name") or "", track_ids
+
+    album_id: str | None = _spodl.parse_spotify_album_id(url)
+    if album_id:
+        info, track_ids = _spodl.get_spotify_album_tracks(album_id)
+        return info.get("name") or "", track_ids
+
+    raise ValueError(
+        f"Could not parse a Spotify playlist or album ID from URL: {url!r}"
+    )
+
+
+def _resolve_youtube_video_ids(url: str) -> tuple[str, list[str]]:
+    """Blocking: extract playlist entries from a YouTube URL via yt-dlp.
+
+    Uses ``extract_flat=True`` to list entries without downloading.
+
+    Parameters
+    ----------
+    url:
+        A YouTube playlist URL (``youtube.com/playlist?list=...``).
+
+    Returns
+    -------
+    tuple[str, list[str]]
+        ``(playlist_title, [video_id, ...])``
+    """
+    try:
+        import yt_dlp  # noqa: PLC0415
+    except ImportError as exc:
+        raise RuntimeError("yt-dlp is not installed; add yt-dlp to requirements") from exc
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "skip_download": True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info: dict = ydl.extract_info(url, download=False) or {}
+
+    title: str = info.get("title") or ""
+    entries: list[dict] = info.get("entries") or []
+    video_ids: list[str] = [
+        e["id"] for e in entries if isinstance(e, dict) and e.get("id")
+    ]
+    return title, video_ids
 
 
 # ---------------------------------------------------------------------------

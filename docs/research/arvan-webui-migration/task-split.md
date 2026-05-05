@@ -109,7 +109,6 @@ Build the Iran-side Web UI and Admin Panel:
 | `iran/api/` | NEW — FastAPI application |
 | `iran/api/auth.py` | NEW — registration, login, JWT |
 | `iran/api/jobs.py` | NEW — POST /jobs, GET /jobs/{id}, SSE |
-| `iran/api/search.py` | NEW — GET /search |
 | `iran/api/downloads.py` | NEW — presigned URL / proxy endpoint |
 | `iran/api/admin.py` | NEW — admin CRUD endpoints |
 | `iran/api/settings.py` | NEW — settings read/write |
@@ -136,9 +135,7 @@ Build the Iran-side Web UI and Admin Panel:
 - [ ] **B7** `POST /jobs` — validate URL, check rate limit, create job in DB, publish `job.create` to Rubika **(M)**
 - [ ] **B8** `GET /jobs/{id}/events` — SSE endpoint; subscribe to in-process event bus for this job_id **(M)**
 - [ ] **B9** `GET /jobs/{id}/download` — validate job ownership, generate presigned URL or proxy stream **(M)**
-- [ ] **B10** `GET /search?q=...` — Spotify/musicdl search (metadata only, no download) **(M)**
-- [ ] **B11** `GET /video/info?url=...` — yt-dlp `-j` metadata fetch; returns quality choices **(S)**
-- [ ] **B12** `GET /library` — paginated user download history **(S)**
+- [ ] **B10** `GET /library` — paginated user download history **(S)**
 
 **Phase 3: Admin API**
 - [ ] **B13** `GET|PATCH /admin/users` — list and update user status; on approve/block send control message to Kharej via Rubika **(M)**
@@ -151,9 +148,9 @@ Build the Iran-side Web UI and Admin Panel:
 **Phase 4: Frontend — Public Pages**
 - [ ] **B19** Set up React + Vite + TypeScript project; Tailwind CSS; shadcn/ui; RTL layout (Vazirmatn font, `dir="rtl"`) **(M)**
 - [ ] **B20** Auth pages: Login, Register, pending-approval page **(M)**
-- [ ] **B21** Search page with result cards and quality picker **(L)**
-- [ ] **B22** Result detail page (YouTube video info, Spotify track/album/artist) **(L)**
-- [ ] **B23** Job progress page with real-time SSE progress bar **(M)**
+- [ ] **B21** URL paste page with platform auto-detection and quality picker **(M)**
+- [ ] **B22** Job progress page with real-time SSE progress bar **(M)**
+- [ ] **B23** Completed download page: download buttons, SHA-256 checksum, expiry indicator **(M)**
 - [ ] **B24** Library / My Downloads page **(M)**
 - [ ] **B25** Streaming audio player **(M)**
 - [ ] **B26** Account settings page **(S)**
@@ -294,7 +291,7 @@ Track B generates `job_id` (UUID v4) and sends:
 }
 ```
 
-For batch jobs, `track_ids` array is included (Track B must fetch playlist track IDs from Spotify GraphQL before sending `job.create`).
+For batch jobs, `track_ids` is always `null` — the Iran VPS sends only the playlist/album URL. The Kharej Worker fetches all track IDs from the platform directly.
 
 ### 3.6 Environment Variables — Shared Understanding
 

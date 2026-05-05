@@ -174,14 +174,33 @@ class JobCreate(Envelope):
 
     # Batch-only fields (present when job_type == "batch")
     collection_name: str | None = Field(
-        None, description="Human-readable playlist/album name (batch jobs only)."
+        None,
+        description=(
+            "Optional human-readable playlist/album name. "
+            "Iran always sends null; Kharej derives the name from the URL via the platform API."
+        ),
     )
     track_ids: list[str] | None = Field(
-        None, description="Platform track IDs (omit if >200 tracks)."
+        None,
+        description=(
+            "Platform track IDs. Always null from Iran. "
+            "Kharej resolves the track list from the URL via the platform API (e.g. Spotify GraphQL)."
+        ),
     )
-    total_tracks: int | None = Field(None, ge=1, description="Total track count (batch jobs only).")
-    batch_seq: int | None = Field(None, ge=1, description="Sequence number for split batches.")
-    batch_total: int | None = Field(None, ge=1, description="Total split-batch count.")
+    total_tracks: int | None = Field(
+        None,
+        ge=1,
+        description=(
+            "Total track count. Always null from Iran. "
+            "Kharej determines this after resolving the collection from the URL."
+        ),
+    )
+    batch_seq: int | None = Field(
+        None, ge=1, description="Reserved for future split-batch protocol. Always null for now."
+    )
+    batch_total: int | None = Field(
+        None, ge=1, description="Reserved for future split-batch protocol. Always null for now."
+    )
 
 
 class JobAccepted(Envelope):

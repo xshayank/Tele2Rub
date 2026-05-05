@@ -267,7 +267,12 @@ class TestBatchDownloaderTrackCalls:
 
     @pytest.mark.asyncio
     async def test_empty_track_ids_raises(self) -> None:
-        """When no tracks are available the batch downloader raises RuntimeError."""
+        """When track_ids=[] is provided explicitly, the batch downloader raises RuntimeError.
+
+        Note: in production Iran always sends track_ids=None (not []); the resolver
+        is called instead.  This test exercises the backward-compat path where an
+        explicitly empty list was passed.
+        """
         track_dl = _make_track_downloader()
         batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
         job = _make_job(track_ids=[], total_tracks=0)
@@ -714,3 +719,202 @@ class TestDispatcherBatchWiring:
         d.register(new_batch)
 
         assert d._batch_downloader is new_batch
+
+
+# ===========================================================================
+# URL resolvers (new Kharej-side logic — Iran sends URLs only)
+# ===========================================================================
+
+
+class TestResolveSpotifyTrackIds:
+    """Tests for _resolve_spotify_track_ids()."""
+
+    def test_resolves_playlist_url(self) -> None:
+        from kharej.downloaders.batch import _resolve_spotify_track_ids
+
+        fake_info = {"name": "Cool Playlist", "total_tracks": 2}
+        fake_ids = ["aaa111", "bbb222"]
+
+        mock_spodl = MagicMock()
+        mock_spodl.parse_spotify_playlist_id = MagicMock(return_value="PLAYLIST_ID")
+        mock_spodl.get_spotify_playlist_tracks = MagicMock(return_value=(fake_info, fake_ids))
+        mock_spodl.parse_spotify_album_id = MagicMock(return_value=None)
+
+        with patch.dict("sys.modules", {"spotify_dl": mock_spodl}):
+            name, ids = _resolve_spotify_track_ids("https://open.spotify.com/playlist/PLAYLIST_ID")
+
+        assert name == "Cool Playlist"
+        assert ids == fake_ids
+        mock_spodl.get_spotify_playlist_tracks.assert_called_once_with("PLAYLIST_ID")
+
+    def test_resolves_album_url(self) -> None:
+        from kharej.downloaders.batch import _resolve_spotify_track_ids
+
+        fake_info = {"name": "Great Album", "total_tracks": 3}
+        fake_ids = ["t1", "t2", "t3"]
+
+        mock_spodl = MagicMock()
+        mock_spodl.parse_spotify_playlist_id = MagicMock(return_value=None)
+        mock_spodl.parse_spotify_album_id = MagicMock(return_value="ALBUM_ID")
+        mock_spodl.get_spotify_album_tracks = MagicMock(return_value=(fake_info, fake_ids))
+
+        with patch.dict("sys.modules", {"spotify_dl": mock_spodl}):
+            name, ids = _resolve_spotify_track_ids("https://open.spotify.com/album/ALBUM_ID")
+
+        assert name == "Great Album"
+        assert ids == fake_ids
+        mock_spodl.get_spotify_album_tracks.assert_called_once_with("ALBUM_ID")
+
+    def test_raises_for_unrecognised_url(self) -> None:
+        from kharej.downloaders.batch import _resolve_spotify_track_ids
+
+        mock_spodl = MagicMock()
+        mock_spodl.parse_spotify_playlist_id = MagicMock(return_value=None)
+        mock_spodl.parse_spotify_album_id = MagicMock(return_value=None)
+
+        with patch.dict("sys.modules", {"spotify_dl": mock_spodl}):
+            with pytest.raises(ValueError, match="Could not parse a Spotify"):
+                _resolve_spotify_track_ids("https://example.com/not-spotify")
+
+
+class TestResolveYoutubeVideoIds:
+    """Tests for _resolve_youtube_video_ids()."""
+
+    def test_resolves_playlist(self) -> None:
+        from kharej.downloaders.batch import _resolve_youtube_video_ids
+
+        fake_info = {
+            "title": "My YouTube Playlist",
+            "entries": [
+                {"id": "vid1", "title": "Song 1"},
+                {"id": "vid2", "title": "Song 2"},
+            ],
+        }
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_instance.extract_info = MagicMock(return_value=fake_info)
+        mock_ydl_instance.__enter__ = MagicMock(return_value=mock_ydl_instance)
+        mock_ydl_instance.__exit__ = MagicMock(return_value=False)
+
+        mock_yt_dlp = MagicMock()
+        mock_yt_dlp.YoutubeDL = MagicMock(return_value=mock_ydl_instance)
+
+        with patch.dict("sys.modules", {"yt_dlp": mock_yt_dlp}):
+            name, ids = _resolve_youtube_video_ids("https://youtube.com/playlist?list=PL_X")
+
+        assert name == "My YouTube Playlist"
+        assert ids == ["vid1", "vid2"]
+
+    def test_skips_entries_without_id(self) -> None:
+        from kharej.downloaders.batch import _resolve_youtube_video_ids
+
+        fake_info = {
+            "title": "Playlist",
+            "entries": [
+                {"id": "vid1"},
+                {"title": "no id here"},  # no "id" key
+                {"id": "vid3"},
+            ],
+        }
+
+        mock_ydl_instance = MagicMock()
+        mock_ydl_instance.extract_info = MagicMock(return_value=fake_info)
+        mock_ydl_instance.__enter__ = MagicMock(return_value=mock_ydl_instance)
+        mock_ydl_instance.__exit__ = MagicMock(return_value=False)
+
+        mock_yt_dlp = MagicMock()
+        mock_yt_dlp.YoutubeDL = MagicMock(return_value=mock_ydl_instance)
+
+        with patch.dict("sys.modules", {"yt_dlp": mock_yt_dlp}):
+            _, ids = _resolve_youtube_video_ids("https://youtube.com/playlist?list=PL_X")
+
+        assert ids == ["vid1", "vid3"]
+
+
+class TestResolveTrackUrls:
+    """Tests for _resolve_track_urls() async dispatcher."""
+
+    @pytest.mark.asyncio
+    async def test_unsupported_platform_raises(self) -> None:
+        from kharej.downloaders.batch import _resolve_track_urls
+
+        with pytest.raises(ValueError, match="not supported for platform"):
+            await _resolve_track_urls("tidal", "https://tidal.com/browse/playlist/123")
+
+    @pytest.mark.asyncio
+    async def test_spotify_dispatches_to_resolver(self) -> None:
+        from kharej.downloaders.batch import _resolve_track_urls
+
+        with patch(
+            "kharej.downloaders.batch._resolve_spotify_track_ids",
+            return_value=("My Playlist", ["id1", "id2"]),
+        ) as mock_fn:
+            name, ids = await _resolve_track_urls(
+                "spotify", "https://open.spotify.com/playlist/ABC"
+            )
+
+        mock_fn.assert_called_once_with("https://open.spotify.com/playlist/ABC")
+        assert name == "My Playlist"
+        assert ids == ["id1", "id2"]
+
+    @pytest.mark.asyncio
+    async def test_youtube_dispatches_to_resolver(self) -> None:
+        from kharej.downloaders.batch import _resolve_track_urls
+
+        with patch(
+            "kharej.downloaders.batch._resolve_youtube_video_ids",
+            return_value=("YT Playlist", ["vid1"]),
+        ) as mock_fn:
+            name, ids = await _resolve_track_urls(
+                "youtube", "https://youtube.com/playlist?list=PL_X"
+            )
+
+        mock_fn.assert_called_once_with("https://youtube.com/playlist?list=PL_X")
+        assert name == "YT Playlist"
+        assert ids == ["vid1"]
+
+
+class TestBatchDownloaderWithUrlResolution:
+    """Verify BatchDownloader.run() calls the resolver when track_ids=None."""
+
+    @pytest.mark.asyncio
+    async def test_run_resolves_from_url_when_track_ids_none(self, tmp_path: Path) -> None:
+        """When Iran sends track_ids=None, BatchDownloader must resolve from job.url."""
+        track_dl = _make_track_downloader([_make_ref(f"media/{_JOB_ID}/t.mp3")])
+        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+
+        # Job has track_ids=None — the normal production case from Iran.
+        job = _make_job(track_ids=None, url="https://open.spotify.com/playlist/ABCDE")
+        progress = _make_progress()
+        s2 = _make_s2()
+        settings = _make_settings()
+
+        with patch(
+            "kharej.downloaders.batch._resolve_track_urls",
+            new=AsyncMock(return_value=("Resolved Playlist", ["id1", "id2"])),
+        ) as mock_resolve:
+            refs = await batch.run(job, s2=s2, progress=progress, settings=settings)
+
+        mock_resolve.assert_called_once_with("spotify", "https://open.spotify.com/playlist/ABCDE")
+        assert track_dl.run.call_count == 2
+        assert len(refs) == 1  # one ZIP
+
+    @pytest.mark.asyncio
+    async def test_resolver_error_propagates(self) -> None:
+        """A resolver failure must surface as an error (not silently continue)."""
+        track_dl = _make_track_downloader()
+        batch = BatchDownloader(per_track_downloaders={"spotify": track_dl})
+        job = _make_job(track_ids=None, url="https://open.spotify.com/playlist/BAD")
+        progress = _make_progress()
+        s2 = _make_s2()
+        settings = _make_settings()
+
+        with patch(
+            "kharej.downloaders.batch._resolve_track_urls",
+            new=AsyncMock(side_effect=ValueError("bad URL")),
+        ):
+            with pytest.raises(ValueError, match="bad URL"):
+                await batch.run(job, s2=s2, progress=progress, settings=settings)
+
+        # Per-track downloader must not have been called.
+        assert track_dl.run.call_count == 0

@@ -83,42 +83,48 @@ If the owner prefers invite codes over email:
 
 ---
 
-### 3.4 Search Page — `/search`
+### 3.4 Download Page — `/download`
 
-**Layout**: Full-width search bar at top (prominent, focused on load); results grid below.
+**Layout**: Full-width URL input bar at top (prominent, focused on load); platform badge and quality picker below.
 
-**Search flow**:
-1. User types a query → debounced call to `GET /search?q=...&platform=spotify` (or multi-platform).
-2. Results shown as cards: cover art thumbnail, title, artist, album, duration, platform badge.
-3. "Download" button on each result opens the **Quality Picker** drawer/modal.
+**Download flow**:
+1. User pastes a platform URL (Spotify track, album, playlist; YouTube video; Tidal, Qobuz, etc.).
+2. Iran detects the platform and content type (single vs. batch) from the URL domain/path pattern — **no external API calls**.
+3. Quality picker appears based on the detected platform.
+4. User clicks "Download" → `POST /jobs` → navigate to the job progress page.
 
-**Filters**: Platform selector (Spotify, Tidal, Qobuz, musicdl, YouTube Music); quality badge filter (MP3, FLAC, Hi-Res).
+**Platform detection (client-side, URL pattern only):**
 
-**Direct URL input**: Users can paste a URL directly into the search bar; the page detects the platform and routes accordingly.
+| URL pattern | Platform | job_type |
+|-------------|----------|----------|
+| `open.spotify.com/track/*` | spotify | single |
+| `open.spotify.com/album/*` or `open.spotify.com/playlist/*` | spotify | batch |
+| `youtube.com/watch*` or `youtu.be/*` | youtube | single |
+| `tidal.com/browse/track/*` | tidal | single |
+| `tidal.com/browse/album/*` or `tidal.com/browse/playlist/*` | tidal | batch |
+| `soundcloud.com/*/*` (track) | soundcloud | single |
+| `*.bandcamp.com/track/*` | bandcamp | single |
+| (plain text, no URL) | musicdl | single |
+
+**No metadata preview before submission.** Track title, album art, and quality confirmation are shown on the job progress/completed page once Kharej sends `job.completed` with the `metadata` field.
 
 ---
 
-### 3.5 Result Detail Page — `/result/{job_id_or_url}`
+### 3.5 Job Completed / Detail Page — `/jobs/{job_id}`
 
-For URLs (YouTube, Spotify track, etc.) that have a rich info page:
+Shown after a job reaches `completed` status. All metadata displayed here comes from the `job.completed.metadata` field sent by the Kharej worker — the Iran VPS never queries Spotify, YouTube, or any media platform directly.
 
-**YouTube video**:
-- Thumbnail, title, channel, duration, upload date.
-- Quality cards: 4K · 1080p · 720p · 480p · 360p · 240p · Audio-only MP3 · Subtitles.
-- Each card shows estimated file size.
-- "Download" button on selected quality → creates job.
+**Common fields (from `job.completed.metadata`):**
+- Album art (thumbnail served from S2 `thumbs/` prefix)
+- Title, artists, album
+- Quality and source platform
+- File size, duration
 
-**Spotify / music track**:
-- Album art, title, artists, album, duration, ISRC.
-- Quality picker: MP3 · FLAC CD · FLAC Hi-Res (availability shown with ✓/✗).
-- Platform waterfall preview (which sources will be tried).
-- "Download" button → creates job.
+**Download buttons:**
+- Single file: one "دانلود فایل" button.
+- Multi-part ZIP: "دانلود بخش ۱", "دانلود بخش ۲", … buttons.
 
-**Spotify playlist / album**:
-- Collection cover art, name, owner/artist, track count.
-- Track list (paginated).
-- Quality picker for the whole batch.
-- "Download All" button → creates batch job.
+**Re-download:** If the S2 object has expired (lifecycle rule deleted it after `media_ttl_days`), show "لینک دانلود منقضی شده است" and a "دانلود مجدد" button that re-submits the job.
 
 ---
 
@@ -314,9 +320,7 @@ Settings are stored in the DB `settings` table (key-value) and pushed to the Kha
 | `POST` | `/auth/login` | None | Login, set refresh cookie |
 | `POST` | `/auth/refresh` | Cookie | Refresh access token |
 | `POST` | `/auth/logout` | JWT | Revoke refresh token |
-| `GET` | `/search` | JWT | Search (Spotify, musicdl, etc.) |
-| `GET` | `/video/info` | JWT | Fetch yt-dlp metadata for a URL |
-| `POST` | `/jobs` | JWT | Create a new download job |
+| `POST` | `/jobs` | JWT | Create a new download job (URL passed to Kharej) |
 | `GET` | `/jobs/{job_id}` | JWT | Get job status and details |
 | `GET` | `/jobs/{job_id}/events` | JWT | SSE stream for job progress |
 | `GET` | `/jobs/{job_id}/download` | JWT | Get presigned URL (or proxy stream) |
