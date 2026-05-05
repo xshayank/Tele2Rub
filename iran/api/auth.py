@@ -9,7 +9,7 @@ POST /auth/logout     JWT     — revoke the current refresh token
 
 JWT Strategy
 ------------
-- Access token: HS256, claims ``{sub, role, status, exp}``, 15-min TTL.
+- Access token: HS256, claims ``{sub, role, status, exp}``, 3-hour TTL.
 - Refresh token: random 32-byte hex; SHA-256 hex digest stored in DB.
   Delivered as ``httpOnly; Secure; SameSite=Strict`` cookie named
   ``refresh_token``.
