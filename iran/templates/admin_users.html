@@ -25,22 +25,42 @@
         <th>ایمیل</th>
         <th>نقش</th>
         <th>وضعیت</th>
+        <th>سقف جاب</th>
+        <th>انقضا</th>
         <th>تاریخ ثبت</th>
         <th>عملیات</th>
       </tr>
     </thead>
     <tbody id="users-tbody">
-      <tr><td colspan="6" style="color:var(--muted)">در حال بارگذاری…</td></tr>
+      <tr><td colspan="8" style="color:var(--muted)">در حال بارگذاری…</td></tr>
     </tbody>
   </table>
   <div id="pagination" class="pagination"></div>
 </div>
 
 <div id="action-result" style="display:none" class="alert"></div>
+
+<!-- Job-limit modal -->
+<div id="jl-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;align-items:center;justify-content:center">
+  <div class="card" style="min-width:320px;max-width:420px;margin:auto">
+    <h3 style="margin-top:0">تنظیم سقف جاب</h3>
+    <label>تعداد جاب مجاز
+      <input id="jl-limit" type="number" min="1" value="100" style="width:100%;margin-top:.3rem">
+    </label>
+    <label style="margin-top:.8rem;display:block">مدت (روز)
+      <input id="jl-days" type="number" min="1" value="30" style="width:100%;margin-top:.3rem">
+    </label>
+    <div style="display:flex;gap:.6rem;margin-top:1rem;justify-content:flex-end">
+      <button class="btn btn-secondary" onclick="closeModal()">انصراف</button>
+      <button class="btn btn-primary" onclick="submitJobLimit()">ذخیره</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>
 let currentPage = 1;
+let modalUserId = null;
 
 async function apiReq(method, path, body) {
   const opts = { method, headers: {} };
@@ -49,6 +69,18 @@ async function apiReq(method, path, body) {
   if (!r) return null;
   if (r.status === 403) { window.location = '/login'; return null; }
   return r.ok ? r.json() : null;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return iso.slice(0, 10);
+}
+
+function jobLimitCell(u) {
+  if (u.job_limit == null) return '<span style="color:var(--muted)">—</span>';
+  const exp = u.job_limit_expires_at ? u.job_limit_expires_at.slice(0,10) : '∞';
+  const expired = u.job_limit_expires_at && new Date(u.job_limit_expires_at) < new Date();
+  return `${u.job_limit} جاب${expired ? ' <span style="color:var(--error)">(منقضی)</span>' : ''}`;
 }
 
 async function loadUsers() {
@@ -62,18 +94,25 @@ async function loadUsers() {
   const tbody = document.getElementById('users-tbody');
   tbody.innerHTML = '';
   data.users.forEach(u => {
+    const exp = u.job_limit_expires_at ? u.job_limit_expires_at.slice(0,10) : (u.job_limit != null ? '∞' : '—');
+    const expired = u.job_limit_expires_at && new Date(u.job_limit_expires_at) < new Date();
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${u.display_name}</td>
       <td>${u.email}</td>
       <td>${u.role}</td>
       <td><span class="badge badge-${u.status === 'active' ? 'completed' : u.status === 'blocked' ? 'failed' : 'pending'}">${u.status}</span></td>
-      <td class="num">${u.created_at?.slice(0,10) ?? ''}</td>
+      <td class="num">${u.job_limit != null ? u.job_limit + ' جاب' + (expired ? ' ⚠️' : '') : '—'}</td>
+      <td class="num">${exp}</td>
+      <td class="num">${fmtDate(u.created_at)}</td>
       <td style="display:flex;gap:0.4rem;flex-wrap:wrap">
         ${u.status === 'pending_approval' ? `<button class="btn btn-primary" onclick="patchUser('${u.id}','approve')">تأیید</button>` : ''}
         ${u.status === 'active' ? `<button class="btn btn-danger" onclick="patchUser('${u.id}','block')">مسدود</button>` : ''}
         ${u.status === 'blocked' ? `<button class="btn btn-secondary" onclick="patchUser('${u.id}','unblock')">رفع مسدودی</button>` : ''}
         ${u.status !== 'deleted' ? `<button class="btn btn-danger" onclick="patchUser('${u.id}','delete')">حذف</button>` : ''}
+        <button class="btn btn-secondary" onclick="openModal('${u.id}')">سقف جاب</button>
+        ${u.job_limit != null ? `<button class="btn btn-secondary" onclick="patchUser('${u.id}','reset_job_limit')">ریست</button>` : ''}
+        ${u.job_limit != null ? `<button class="btn btn-danger" onclick="patchUser('${u.id}','clear_job_limit')">حذف سقف</button>` : ''}
       </td>`;
     tbody.appendChild(tr);
   });
@@ -90,14 +129,33 @@ async function loadUsers() {
   }
 }
 
-async function patchUser(id, action) {
-  const res = await apiReq('PATCH', `/admin/users/${id}`, { action });
+async function patchUser(id, action, extra) {
+  const res = await apiReq('PATCH', `/admin/users/${id}`, { action, ...extra });
   const el = document.getElementById('action-result');
   el.style.display = '';
   if (res) { el.className = 'alert alert-success'; el.textContent = `عملیات ${action} موفق بود.`; loadUsers(); }
   else { el.className = 'alert alert-error'; el.textContent = 'خطا در انجام عملیات.'; }
 }
 
+function openModal(userId) {
+  modalUserId = userId;
+  document.getElementById('jl-modal').style.display = 'flex';
+}
+
+function closeModal() {
+  modalUserId = null;
+  document.getElementById('jl-modal').style.display = 'none';
+}
+
+async function submitJobLimit() {
+  const limit = parseInt(document.getElementById('jl-limit').value, 10);
+  const days = parseInt(document.getElementById('jl-days').value, 10);
+  if (!limit || !days) return;
+  closeModal();
+  await patchUser(modalUserId ?? '', 'set_job_limit', { job_limit: limit, days });
+}
+
 loadUsers();
 </script>
 {% endblock %}
+

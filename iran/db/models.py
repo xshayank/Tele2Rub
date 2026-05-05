@@ -79,6 +79,14 @@ class User(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Job-limit quota (Iran-only).  NULL means no quota enforced.
+    job_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    job_limit_start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    job_limit_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     # Relationships
     jobs: Mapped[list[Job]] = relationship("Job", back_populates="user")

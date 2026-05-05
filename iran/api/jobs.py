@@ -183,6 +183,51 @@ async def _check_rate_limit(user_id: str, session: AsyncSession) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-user job quota helper
+# ---------------------------------------------------------------------------
+
+
+async def _check_job_quota(user: Any, session: AsyncSession) -> None:
+    """Raise 429 if the user has exhausted their per-period job quota.
+
+    Only jobs that are NOT ``failed`` or ``cancelled`` count toward the quota.
+    The quota period is defined by ``user.job_limit_start_at`` and
+    ``user.job_limit_expires_at``; if the period has expired no restriction is
+    applied (admin must renew the quota to restrict the user again).
+    """
+    if user.job_limit is None:
+        return  # No quota configured for this user.
+
+    now = datetime.now(tz=timezone.utc)
+
+    expires_at = user.job_limit_expires_at
+    if expires_at is not None:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if now > expires_at:
+            return  # Quota period has expired; no restriction.
+
+    start_at = user.job_limit_start_at
+    if start_at is not None and start_at.tzinfo is None:
+        start_at = start_at.replace(tzinfo=timezone.utc)
+
+    q = select(func.count(Job.id)).where(
+        Job.user_id == user.id,
+        Job.status.not_in(["failed", "cancelled"]),
+    )
+    if start_at is not None:
+        q = q.where(Job.created_at >= start_at)
+
+    count_result = await session.execute(q)
+    count = count_result.scalar_one()
+    if count >= user.job_limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Job quota exceeded: {count} of {user.job_limit} allowed jobs used.",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Request / response schemas
 # ---------------------------------------------------------------------------
 
@@ -301,6 +346,10 @@ async def create_job(
 
     # 2. Per-user rate limit
     await _check_rate_limit(current_user.id, session)
+
+    # 2b. Per-user job quota (admin users are exempt)
+    if current_user.role != "admin":
+        await _check_job_quota(current_user, session)
 
     # 3. Generate job_id and insert DB row
     job_id = str(uuid.uuid4())
