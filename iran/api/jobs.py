@@ -189,6 +189,24 @@ async def _check_rate_limit(user_id: str, session: AsyncSession) -> None:
 _DEFAULT_MAX_CONCURRENT_JOBS = 0  # 0 = unlimited
 
 
+def _db_supports_skip_locked() -> bool:
+    """Return True when the configured database supports SELECT … FOR UPDATE SKIP LOCKED.
+
+    PostgreSQL and MySQL support it; SQLite (used in tests) does not.
+    The result is derived from DATABASE_URL and cached by the lru_cache on
+    ``get_settings()``, so this is effectively a one-time check.
+    """
+    try:
+        from iran.config import get_settings
+
+        url = get_settings().DATABASE_URL.lower()
+        return url.startswith(("postgresql", "mysql", "mariadb"))
+    except (ImportError, AttributeError):
+        logger.warning("Could not determine database dialect; disabling SKIP LOCKED")
+        return False
+
+
+
 async def _get_max_concurrent_jobs(session: AsyncSession) -> int:
     """Return MAX_CONCURRENT_JOBS from settings (0 = unlimited, never queues)."""
     row = await session.get(Setting, "MAX_CONCURRENT_JOBS")
@@ -232,15 +250,20 @@ async def _maybe_dequeue_next_job(rubika_client: Any, session: AsyncSession) -> 
     if max_concurrent > 0 and running_count >= max_concurrent:
         return  # Still at full capacity
 
+    # Use SELECT … FOR UPDATE SKIP LOCKED on databases that support it
+    # (PostgreSQL, MySQL) to prevent two concurrent terminal-state transitions
+    # from picking the same queued job and dispatching it twice.
+    # SQLite (used in tests) serialises all writes via a global lock, so it
+    # does not need — and does not support — this clause.
     # Pick the oldest waiting job (FIFO).
-    result = await session.execute(
-        select(Job).where(Job.status == "queued").order_by(Job.created_at.asc()).limit(1)
-    )
+    q = select(Job).where(Job.status == "queued").order_by(Job.created_at.asc()).limit(1)
+    if _db_supports_skip_locked():
+        q = q.with_for_update(skip_locked=True)
+    result = await session.execute(q)
     job = result.scalar_one_or_none()
     if job is None:
         return  # Queue is empty
 
-    job.status = "pending"
     msg = JobCreate(
         v=1,
         type="job.create",
@@ -258,6 +281,10 @@ async def _maybe_dequeue_next_job(rubika_client: Any, session: AsyncSession) -> 
     )
     try:
         await rubika_client.send(msg)
+        # Only promote to pending after a successful dispatch so that a send
+        # failure leaves the job in 'queued' and it will be retried on the
+        # next terminal transition.
+        job.status = "pending"
         logger.info("Queued job dispatched", extra={"job_id": job.id, "user_id": job.user_id})
     except Exception as exc:
         logger.error(

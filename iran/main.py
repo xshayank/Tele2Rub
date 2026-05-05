@@ -11,6 +11,7 @@ pattern introduced in FastAPI ≥ 0.93.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import pathlib
@@ -131,6 +132,47 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
         }
         app.state.event_bus.publish(str(msg.job_id), event)
         logger.info("job completed", extra={"job_id": msg.job_id})
+
+        # Schedule S2 object deletion 1 hour after completion so users have
+        # time to download while files are automatically cleaned up afterward.
+        job_id_str = str(msg.job_id)
+        s2_client = app.state.s2_client
+
+        async def _delete_s2_after_ttl(jid: str) -> None:
+            await asyncio.sleep(3600)
+            try:
+                count = await s2_client.delete_job_objects(jid)
+                logger.info(
+                    "S2 objects deleted after 1-hour TTL",
+                    extra={"job_id": jid, "deleted": count},
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to delete S2 objects after TTL",
+                    extra={"job_id": jid, "error": str(exc)},
+                )
+
+        # Keep a strong reference to the task so it is not garbage-collected
+        # before it fires.  The done-callback removes it from the set and also
+        # surfaces any unexpected exception (the coroutine already handles its
+        # own exceptions, so this is a last-resort safety net).
+        _s2_cleanup_tasks: set[asyncio.Task[None]] = getattr(
+            app.state, "_s2_cleanup_tasks", set()
+        )
+        if not hasattr(app.state, "_s2_cleanup_tasks"):
+            app.state._s2_cleanup_tasks = _s2_cleanup_tasks
+        task: asyncio.Task[None] = asyncio.create_task(_delete_s2_after_ttl(job_id_str))
+        _s2_cleanup_tasks.add(task)
+
+        def _on_task_done(t: asyncio.Task[None]) -> None:
+            _s2_cleanup_tasks.discard(t)
+            if not t.cancelled() and (exc := t.exception()):
+                logger.error(
+                    "Unhandled exception in S2 cleanup task",
+                    extra={"error": str(exc)},
+                )
+
+        task.add_done_callback(_on_task_done)
 
     async def on_job_failed(msg: JobFailed) -> None:
         """Update job to 'failed', store error details, publish EventBus."""

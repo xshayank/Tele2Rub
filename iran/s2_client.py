@@ -88,6 +88,10 @@ class S2ClientProtocol(Protocol):
         """Return info dicts for every S2 object whose key starts with *prefix*."""
         ...
 
+    async def delete_job_objects(self, job_id: str) -> int:
+        """Delete all S2 objects under ``media/{job_id}/`` and return the number deleted."""
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Real implementation
@@ -245,6 +249,45 @@ class IranS2Client:
 
         return await asyncio.to_thread(_list)
 
+    async def delete_job_objects(self, job_id: str) -> int:
+        """Delete all S2 objects under ``media/{job_id}/`` and return the number deleted.
+
+        Uses the S3 ``delete_objects`` batch API (up to 1 000 keys per call).
+        Logs a warning for any per-key errors returned by the API rather than
+        raising, so a partial failure does not propagate to callers.
+        """
+        prefix = f"media/{job_id}/"
+
+        def _delete() -> int:
+            keys: list[dict] = []
+            paginator = self._s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self._config.bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    keys.append({"Key": obj["Key"]})
+
+            if not keys:
+                return 0
+
+            # delete_objects accepts at most 1 000 keys per call.
+            deleted = 0
+            for i in range(0, len(keys), 1000):
+                batch = keys[i : i + 1000]
+                resp = self._s3.delete_objects(
+                    Bucket=self._config.bucket,
+                    Delete={"Objects": batch, "Quiet": True},
+                )
+                errors = resp.get("Errors", [])
+                if errors:
+                    logger.warning(
+                        "S2 delete_objects: some keys could not be deleted",
+                        extra={"job_id": job_id, "errors": errors},
+                    )
+                deleted += len(batch) - len(errors)
+
+            return deleted
+
+        return await asyncio.to_thread(_delete)
+
 
 # ---------------------------------------------------------------------------
 # Stub (used when S2 credentials are not configured)
@@ -274,6 +317,10 @@ class _StubS2Client:
     async def list_objects_by_prefix(self, prefix: str) -> list[dict]:  # noqa: ARG002
         logger.debug("StubS2Client.list_objects_by_prefix (no-op)", extra={"prefix": prefix})
         return []
+
+    async def delete_job_objects(self, job_id: str) -> int:  # noqa: ARG002
+        logger.debug("StubS2Client.delete_job_objects (no-op)", extra={"job_id": job_id})
+        return 0
 
 
 # ---------------------------------------------------------------------------
