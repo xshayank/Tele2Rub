@@ -213,14 +213,17 @@ async def _download_spotify_track_locally(
             return result
 
     if _prefer_lossless:
-        _sources = "QobuzMusicClient, KuwoMusicClient, and QianqianMusicClient"
+        raise RuntimeError(
+            f"All FLAC download sources failed for track: {artist!r} - {title!r}. "
+            "QobuzMusicClient, KuwoMusicClient, and QianqianMusicClient all failed. "
+            "Ensure musicdl is installed and the musicdl sources are accessible."
+        )
     else:
-        _sources = "SpotifyMusicClient and yt-dlp"
-    raise RuntimeError(
-        f"All download sources failed for track: {artist!r} - {title!r}. "
-        f"{_sources} all failed. "
-        "Ensure yt-dlp is up to date and musicdl is installed."
-    )
+        raise RuntimeError(
+            f"All MP3 download sources failed for track: {artist!r} - {title!r}. "
+            "SpotifyMusicClient and yt-dlp both failed. "
+            "Ensure yt-dlp is up to date and musicdl is installed."
+        )
 
 
 def _is_spotify_collection(url: str) -> bool:
