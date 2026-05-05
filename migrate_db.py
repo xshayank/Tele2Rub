@@ -108,21 +108,29 @@ def map_sqlite_type_to_postgres(sqlite_type):
 
 
 def get_table_schema(sqlite_conn, table_name):
-    """Get table schema from SQLite"""
+    """Get table schema from SQLite and return schema with column info"""
     cursor = sqlite_conn.cursor()
     cursor.execute(f"PRAGMA table_info({table_name})")
     columns = cursor.fetchall()
     
     schema = []
+    column_info = []  # Track column names and types for data conversion
+    
     for col in columns:
         col_name = col[1]
-        col_type = map_sqlite_type_to_postgres(col[2])
+        sqlite_type = col[2]
+        pg_type = map_sqlite_type_to_postgres(sqlite_type)
         not_null = 'NOT NULL' if col[3] else ''
         primary_key = 'PRIMARY KEY' if col[5] else ''
         
-        schema.append(f'"{col_name}" {col_type} {not_null} {primary_key}'.strip())
+        schema.append(f'"{col_name}" {pg_type} {not_null} {primary_key}'.strip())
+        column_info.append({
+            'name': col_name,
+            'sqlite_type': sqlite_type.upper(),
+            'pg_type': pg_type
+        })
     
-    return schema
+    return schema, column_info
 
 
 def create_postgres_table(pg_conn, table_name, schema):
@@ -151,7 +159,22 @@ def create_postgres_table(pg_conn, table_name, schema):
         raise
 
 
-def copy_table_data(sqlite_conn, pg_conn, table_name):
+def convert_row_data(row, column_info):
+    """Convert SQLite row data to PostgreSQL compatible format"""
+    converted = []
+    for i, value in enumerate(row):
+        pg_type = column_info[i]['pg_type']
+        
+        # Convert boolean types (SQLite stores as 0/1, PostgreSQL needs True/False)
+        if pg_type == 'BOOLEAN' and value is not None:
+            converted.append(bool(value))
+        else:
+            converted.append(value)
+    
+    return tuple(converted)
+
+
+def copy_table_data(sqlite_conn, pg_conn, table_name, column_info):
     """Copy all data from SQLite table to PostgreSQL table"""
     sqlite_cursor = sqlite_conn.cursor()
     pg_cursor = pg_conn.cursor()
@@ -181,7 +204,9 @@ def copy_table_data(sqlite_conn, pg_conn, table_name):
     try:
         for i in range(0, total_rows, batch_size):
             batch = rows[i:i + batch_size]
-            pg_cursor.executemany(insert_query, batch)
+            # Convert each row to handle type conversions
+            converted_batch = [convert_row_data(row, column_info) for row in batch]
+            pg_cursor.executemany(insert_query, converted_batch)
             pg_conn.commit()
             print(f"  → Copied {min(i + batch_size, total_rows)}/{total_rows} rows", end='\r')
         
@@ -222,14 +247,14 @@ def migrate_database():
         for i, table_name in enumerate(tables, 1):
             print(f"[{i}/{len(tables)}] Migrating table: {table_name}")
             
-            # Get schema
-            schema = get_table_schema(sqlite_conn, table_name)
+            # Get schema with column info for type conversion
+            schema, column_info = get_table_schema(sqlite_conn, table_name)
             
             # Create table in PostgreSQL
             create_postgres_table(pg_conn, table_name, schema)
             
-            # Copy data
-            rows_copied = copy_table_data(sqlite_conn, pg_conn, table_name)
+            # Copy data with type conversion
+            rows_copied = copy_table_data(sqlite_conn, pg_conn, table_name, column_info)
             total_rows_copied += rows_copied
             
             print()
