@@ -85,29 +85,41 @@ async def _download_spotify_track_locally(
     _quality_lower = quality.lower()
     _prefer_lossless = _quality_lower in _FLAC_QUALITIES
 
-    async def _try_spotiflac() -> Path | None:
-        """Download via SpotiFLAC backend (Qobuz or Amazon). Returns Path or None on failure."""
+    async def _try_musicdl_source(source_name: str) -> Path | None:
+        """Download via a specific musicdl source client (no login cookies). Returns Path or None."""
         try:
-            from rubetunes.providers.spotiflac import download_spotiflac  # noqa: PLC0415
+            from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
 
-            result = await asyncio.to_thread(download_spotiflac, info, quality, tmp_dir)
-            if result is not None and result.exists():
-                try:
-                    from rubetunes.tagging import embed_metadata  # noqa: PLC0415
+            client = MusicdlClient(sources=[source_name])
+            musicdl_query = f"{artist} - {title}" if artist else title
+            search_result = await client.search(musicdl_query, sources=[source_name], limit=3)
+            for track in search_result.tracks[:3]:
+                dl_result = await client.download(track, dest_dir=tmp_dir)
+                if dl_result.success and dl_result.file_path:
+                    audio_path = Path(dl_result.file_path)
+                    if audio_path.exists():
+                        try:
+                            from rubetunes.tagging import embed_metadata  # noqa: PLC0415
 
-                    embed_metadata(result, info)
-                except Exception as exc:
-                    logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
-                return result
-            logger.info(
+                            embed_metadata(audio_path, info)
+                        except Exception as exc:
+                            logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
+                        return audio_path
+            logger.warning(
                 {
-                    "event": "spotify.spotiflac_no_result",
-                    "qobuz_id": info.get("qobuz_id"),
-                    "amazon_url": info.get("amazon_url"),
+                    "event": "spotify.musicdl_source_no_file",
+                    "source": source_name,
+                    "query": musicdl_query,
                 }
             )
         except Exception as exc:
-            logger.warning({"event": "spotify.spotiflac_failed", "error": repr(exc)})
+            logger.warning(
+                {
+                    "event": "spotify.musicdl_source_failed",
+                    "source": source_name,
+                    "error": repr(exc),
+                }
+            )
         return None
 
     async def _try_ytdlp() -> Path | None:
@@ -160,79 +172,54 @@ async def _download_spotify_track_locally(
             logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
         return None
 
-    async def _try_musicdl() -> Path | None:
-        """Download via musicdl. Returns Path or None on failure."""
-        try:
-            from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
-
-            client = MusicdlClient()
-            musicdl_query = f"{artist} - {title}" if artist else title
-            search_result = await client.search(musicdl_query, limit=1)
-            if search_result.tracks:
-                dl_result = await client.download(search_result.tracks[0], dest_dir=tmp_dir)
-                if dl_result.success and dl_result.file_path:
-                    audio_path = Path(dl_result.file_path)
-                    if audio_path.exists():
-                        try:
-                            from rubetunes.tagging import embed_metadata  # noqa: PLC0415
-
-                            embed_metadata(audio_path, info)
-                        except Exception as exc:
-                            logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
-                        return audio_path
-            logger.warning({"event": "spotify.musicdl_no_file", "query": musicdl_query})
-        except Exception as exc:
-            logger.warning({"event": "spotify.musicdl_failed", "error": repr(exc)})
-        return None
-
     if _prefer_lossless:
-        # FLAC: SpotiFLAC backend first (Qobuz/Amazon), then musicdl, then yt-dlp
+        # FLAC: QobuzMusicClient → KuwoMusicClient → QianqianMusicClient (all via musicdl, no cookies)
         logger.info(
             {
                 "event": "spotify.download_strategy",
                 "quality": quality,
-                "primary": "spotiflac",
-                "secondary": "musicdl",
+                "primary": "QobuzMusicClient",
+                "secondary": "KuwoMusicClient",
+                "tertiary": "QianqianMusicClient",
+            }
+        )
+        result = await _try_musicdl_source("QobuzMusicClient")
+        if result is not None:
+            return result
+        logger.info({"event": "spotify.qobuz_fallback_to_kuwo", "quality": quality})
+        result = await _try_musicdl_source("KuwoMusicClient")
+        if result is not None:
+            return result
+        logger.info({"event": "spotify.kuwo_fallback_to_qianqian", "quality": quality})
+        result = await _try_musicdl_source("QianqianMusicClient")
+        if result is not None:
+            return result
+    else:
+        # MP3: SpotifyMusicClient (musicdl, no cookies) → yt-dlp
+        logger.info(
+            {
+                "event": "spotify.download_strategy",
+                "quality": quality,
+                "primary": "SpotifyMusicClient",
                 "backup": "ytdlp",
             }
         )
-        result = await _try_spotiflac()
+        result = await _try_musicdl_source("SpotifyMusicClient")
         if result is not None:
             return result
-        logger.info({"event": "spotify.spotiflac_fallback_to_musicdl", "quality": quality})
-        result = await _try_musicdl()
-        if result is not None:
-            return result
-        logger.info({"event": "spotify.musicdl_fallback_to_ytdlp", "quality": quality})
+        logger.info({"event": "spotify.spotify_musicdl_fallback_to_ytdlp", "quality": quality})
         result = await _try_ytdlp()
-        if result is not None:
-            return result
-    else:
-        # MP3 / default: yt-dlp first, musicdl as backup
-        logger.info(
-            {
-                "event": "spotify.download_strategy",
-                "quality": quality,
-                "primary": "ytdlp",
-                "backup": "musicdl",
-            }
-        )
-        result = await _try_ytdlp()
-        if result is not None:
-            return result
-        logger.info({"event": "spotify.ytdlp_fallback_to_musicdl", "quality": quality})
-        result = await _try_musicdl()
         if result is not None:
             return result
 
     if _prefer_lossless:
-        _sources = "SpotiFLAC (Qobuz/Amazon), musicdl, and yt-dlp"
+        _sources = "QobuzMusicClient, KuwoMusicClient, and QianqianMusicClient"
     else:
-        _sources = "yt-dlp and musicdl"
+        _sources = "SpotifyMusicClient and yt-dlp"
     raise RuntimeError(
         f"All download sources failed for track: {artist!r} - {title!r}. "
         f"{_sources} all failed. "
-        "Ensure a valid cookies.txt is present and yt-dlp is up to date."
+        "Ensure yt-dlp is up to date and musicdl is installed."
     )
 
 
