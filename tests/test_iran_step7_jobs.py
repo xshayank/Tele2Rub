@@ -1189,9 +1189,11 @@ class TestJobQueue:
 
         # The queued job should now have been dispatched (a new JobCreate sent)
         new_messages = [wire for _, wire in transport.sent[before_sent:]]
+        dispatched = [w for w in new_messages if '"job.create"' in w]
+        assert dispatched, f"Expected a job.create message after dequeue but got: {new_messages}"
         assert any(
-            '"job.create"' in wire and queued_job_id in wire for wire in new_messages
-        ), f"Expected dequeued job {queued_job_id} in sent messages: {new_messages}"
+            queued_job_id in w for w in dispatched
+        ), f"Expected dequeued job {queued_job_id} in dispatched messages: {dispatched}"
 
         # DB status of the queued job should now be 'pending'
         from iran.db.models import Job
