@@ -130,15 +130,27 @@ async def list_users(
     total = total_result.scalar_one()
     q = q.order_by(User.created_at.desc()).offset((page - 1) * per_page).limit(per_page)
     rows = (await session.execute(q)).scalars().all()
+
+    # Fetch total job counts for all returned users in a single query
+    user_ids = [u.id for u in rows]
+    jobs_count_map: dict[str, int] = {}
+    if user_ids:
+        count_result = await session.execute(
+            select(Job.user_id, func.count(Job.id))
+            .where(Job.user_id.in_(user_ids))
+            .group_by(Job.user_id)
+        )
+        jobs_count_map = {row[0]: row[1] for row in count_result.all()}
+
     return {
         "total": total,
         "page": page,
         "per_page": per_page,
-        "users": [_user_dict(u) for u in rows],
+        "users": [_user_dict(u, jobs_count=jobs_count_map.get(u.id, 0)) for u in rows],
     }
 
 
-def _user_dict(u: User) -> dict:
+def _user_dict(u: User, *, jobs_count: int = 0) -> dict:
     return {
         "id": u.id,
         "email": u.email,
@@ -150,6 +162,7 @@ def _user_dict(u: User) -> dict:
         "job_limit": u.job_limit,
         "job_limit_start_at": u.job_limit_start_at.isoformat() if u.job_limit_start_at else None,
         "job_limit_expires_at": u.job_limit_expires_at.isoformat() if u.job_limit_expires_at else None,
+        "jobs_count": jobs_count,
     }
 
 
@@ -202,7 +215,7 @@ async def get_user(
             quota_used = (await session.execute(q)).scalar_one()
 
     return {
-        **_user_dict(user),
+        **_user_dict(user, jobs_count=sum(status_counts.values())),
         "job_counts": status_counts,
         "quota_used": quota_used,
     }

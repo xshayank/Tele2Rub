@@ -533,3 +533,58 @@ async def logout(
         )
     )
     await session.flush()
+
+
+# ---------------------------------------------------------------------------
+# GET /auth/me
+# ---------------------------------------------------------------------------
+
+
+@router.get("/me", summary="Get current user's profile and job quota")
+async def get_me(
+    session: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Return the authenticated user's profile and job-quota usage.
+
+    ``quota_used`` and ``jobs_remaining`` are ``null`` when no quota is configured.
+    """
+    from iran.db.models import Job
+
+    user = await session.get(User, current_user.id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    quota_used: int | None = None
+    jobs_remaining: int | None = None
+
+    if user.job_limit is not None:
+        now = datetime.now(tz=timezone.utc)
+        expires_at = user.job_limit_expires_at
+        period_active = expires_at is None or (
+            (expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at)
+            >= now
+        )
+        if period_active:
+            q = select(func.count(Job.id)).where(
+                Job.user_id == user.id,
+                Job.status.not_in(["failed", "cancelled"]),
+            )
+            start_at = user.job_limit_start_at
+            if start_at is not None:
+                if start_at.tzinfo is None:
+                    start_at = start_at.replace(tzinfo=timezone.utc)
+                q = q.where(Job.created_at >= start_at)
+            quota_used = (await session.execute(q)).scalar_one()
+            jobs_remaining = max(0, user.job_limit - quota_used)
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "role": user.role,
+        "job_limit": user.job_limit,
+        "job_limit_expires_at": user.job_limit_expires_at.isoformat() if user.job_limit_expires_at else None,
+        "quota_used": quota_used,
+        "jobs_remaining": jobs_remaining,
+    }

@@ -626,7 +626,7 @@ async def cancel_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
     _assert_owner_or_admin(job, current_user)
 
-    if job.status in ("completed", "failed", "cancelled"):
+    if job.status in ("completed", "failed", "cancelled", "deleted"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Job is already in terminal state: {job.status}.",
@@ -676,7 +676,7 @@ async def cancel_job(
 # GET /jobs/{id}/events  (SSE)
 # ---------------------------------------------------------------------------
 
-_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "deleted"})
 _SSE_HEARTBEAT_INTERVAL = 15  # seconds
 
 
@@ -726,6 +726,11 @@ async def job_events(
             "message": ERROR_CODE_MESSAGES["cancelled"],
             "retryable": False,
         }
+    elif job.status == "deleted":
+        terminal_event = {
+            "type": "job.deleted",
+            "job_id": job_id,
+        }
 
     event_bus = request.app.state.event_bus
 
@@ -757,7 +762,7 @@ async def job_events(
                 yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
 
                 # Close stream after terminal events
-                if event_type in ("job.completed", "job.failed"):
+                if event_type in ("job.completed", "job.failed", "job.deleted"):
                     break
 
     return StreamingResponse(
@@ -794,6 +799,12 @@ async def download_job(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
     _assert_owner_or_admin(job, current_user)
+
+    if job.status == "deleted":
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Job files have been deleted (1-hour TTL expired).",
+        )
 
     if job.status != "completed":
         raise HTTPException(

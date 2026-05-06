@@ -394,6 +394,16 @@ class BatchDownloader:
                 ref: S2ObjectRef = await asyncio.to_thread(s2.upload_file, part_path, s2_key)
                 refs.append(ref)
 
+                # Delete the local zip part immediately after a successful upload
+                # to free disk space, rather than waiting for the temp-dir context
+                # manager to clean up at the end.
+                try:
+                    part_path.unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.warning(
+                        {"event": "batch.cleanup_part_failed", "path": str(part_path), "error": repr(exc)}
+                    )
+
                 await progress.report_progress(
                     job.job_id,
                     100,

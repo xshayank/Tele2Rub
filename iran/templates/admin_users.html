@@ -27,12 +27,13 @@
         <th>وضعیت</th>
         <th>سقف جاب</th>
         <th>انقضا</th>
+        <th>جاب‌ها</th>
         <th>تاریخ ثبت</th>
         <th>عملیات</th>
       </tr>
     </thead>
     <tbody id="users-tbody">
-      <tr><td colspan="8" style="color:var(--muted)">در حال بارگذاری…</td></tr>
+      <tr><td colspan="9" style="color:var(--muted)">در حال بارگذاری…</td></tr>
     </tbody>
   </table>
   <div id="pagination" class="pagination"></div>
@@ -97,6 +98,7 @@ async function loadUsers() {
       <td><span class="badge badge-${u.status === 'active' ? 'completed' : u.status === 'blocked' ? 'failed' : 'pending'}">${u.status}</span></td>
       <td class="num">${u.job_limit != null ? u.job_limit + ' جاب' + (expired ? ' ⚠️' : '') : '—'}</td>
       <td class="num">${exp}</td>
+      <td class="num">${u.jobs_count != null ? u.jobs_count : 0}</td>
       <td class="num">${fmtDate(u.created_at)}</td>
       <td style="display:flex;gap:0.4rem;flex-wrap:wrap">
         ${u.status === 'pending_approval' ? `<button class="btn btn-primary" onclick="patchUser('${u.id}','approve')">تأیید</button>` : ''}
