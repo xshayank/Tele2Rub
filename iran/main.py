@@ -123,23 +123,24 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
             job.s2_keys = [p.model_dump() for p in msg.parts]
             job.metadata_json = msg.metadata
 
-            # Deduct extra quota for large files: each full GB over 2 GB costs
+            # Deduct extra quota for large files: each full GiB over 2 GiB costs
             # one additional job from the user's quota (job_limit).
-            _ONE_GB = 1_073_741_824  # 1 GiB in bytes
+            _ONE_GIB = 1_073_741_824  # 1 GiB in bytes
+            _FREE_THRESHOLD_GIB = 2
             total_bytes = sum(p.size for p in msg.parts)
-            if total_bytes > 2 * _ONE_GB:
-                extra_gb = int((total_bytes - 2 * _ONE_GB) // _ONE_GB)
-                if extra_gb > 0:
+            if total_bytes > _FREE_THRESHOLD_GIB * _ONE_GIB:
+                extra_gib = (total_bytes - _FREE_THRESHOLD_GIB * _ONE_GIB) // _ONE_GIB
+                if extra_gib > 0:
                     user = await session.get(User, job.user_id)
                     if user is not None and user.job_limit is not None:
-                        user.job_limit = max(0, user.job_limit - extra_gb)
+                        user.job_limit = max(0, user.job_limit - extra_gib)
                         logger.info(
                             "Large file quota deduction",
                             extra={
                                 "job_id": msg.job_id,
                                 "user_id": job.user_id,
                                 "total_bytes": total_bytes,
-                                "extra_gb": extra_gb,
+                                "extra_gib": extra_gib,
                                 "new_job_limit": user.job_limit,
                             },
                         )
