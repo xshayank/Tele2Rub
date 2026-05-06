@@ -11,6 +11,7 @@
       <option value="failed">❌ خطا</option>
       <option value="pending">🕐 در انتظار</option>
       <option value="cancelled">🚫 لغو شده</option>
+      <option value="deleted">🗑 حذف شده</option>
     </select>
     <a href="/" class="btn btn-primary btn-sm">+ دانلود جدید</a>
   </div>
@@ -39,12 +40,13 @@
   var statusLabels = {
     'pending': 'در انتظار', 'accepted': 'پذیرفته شد',
     'running': 'در حال اجرا', 'completed': 'تکمیل شد',
-    'failed': 'خطا', 'cancelled': 'لغو شد'
+    'failed': 'خطا', 'cancelled': 'لغو شد', 'deleted': 'حذف شده'
   };
   var badgeClass = {
     'pending': 'badge-pending', 'accepted': 'badge-pending',
     'running': 'badge-running', 'completed': 'badge-completed',
-    'failed': 'badge-failed', 'cancelled': 'badge-cancelled'
+    'failed': 'badge-failed', 'cancelled': 'badge-cancelled',
+    'deleted': 'badge-cancelled'
   };
   var platformIcons = {
     'spotify': '🎵', 'youtube': '▶️', 'tidal': '🌊',

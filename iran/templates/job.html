@@ -95,7 +95,7 @@
   var statusLabels = {
     'pending': 'در انتظار', 'accepted': 'پذیرفته شد',
     'running': 'در حال اجرا', 'completed': 'تکمیل شد',
-    'failed': 'خطا', 'cancelled': 'لغو شد'
+    'failed': 'خطا', 'cancelled': 'لغو شد', 'deleted': 'فایل‌ها حذف شد'
   };
   var phaseLabels = {
     'downloading': 'دانلود', 'processing': 'پردازش',
@@ -104,7 +104,8 @@
   var badgeClass = {
     'pending': 'badge-pending', 'accepted': 'badge-pending',
     'running': 'badge-running', 'completed': 'badge-completed',
-    'failed': 'badge-failed', 'cancelled': 'badge-cancelled'
+    'failed': 'badge-failed', 'cancelled': 'badge-cancelled',
+    'deleted': 'badge-cancelled'
   };
   var errorMessages = {
     'no_source_available': 'منبع دانلودی یافت نشد.',
@@ -155,11 +156,12 @@
     if (data.type === 'job.progress') st = 'running';
     if (data.type === 'job.completed') st = 'completed';
     if (data.type === 'job.failed') st = 'failed';
+    if (data.type === 'job.deleted') st = 'deleted';
 
     if (st) {
       statusBadge.className = 'badge ' + (badgeClass[st] || '');
       statusBadge.textContent = statusLabels[st] || st;
-      if (st === 'completed' || st === 'failed' || st === 'cancelled') {
+      if (st === 'completed' || st === 'failed' || st === 'cancelled' || st === 'deleted') {
         cancelBtn.style.display = 'none';
       } else {
         cancelBtn.style.display = '';
@@ -189,6 +191,10 @@
       var msg = errorMessages[code] || data.message || 'خطای ناشناخته';
       errorBox.innerHTML = '<div class="alert alert-error">' + msg + '</div>';
     }
+    if (data.type === 'job.deleted' || data.status === 'deleted') {
+      downloadList.innerHTML = '';
+      errorBox.innerHTML = '<div class="alert alert-info">⏳ فایل‌های این کار پس از ۱ ساعت به‌صورت خودکار حذف شده‌اند.</div>';
+    }
   }
 
   // Load current job state first
@@ -208,7 +214,7 @@
           .then(function(d) { if (d.parts) renderDownloads(d.parts); });
         return; // No SSE needed
       }
-      if (data.status === 'failed' || data.status === 'cancelled') {
+      if (data.status === 'failed' || data.status === 'cancelled' || data.status === 'deleted') {
         _isTerminal = true;
         return;
       }
@@ -232,7 +238,7 @@
             .then(function(r) { return r.json(); })
             .then(function(d) { if (d.parts) renderDownloads(d.parts); });
         }
-        if (data.type === 'job.failed' || data.type === 'job.cancelled') {
+        if (data.type === 'job.failed' || data.type === 'job.cancelled' || data.type === 'job.deleted') {
           _isTerminal = true;
           _sseActive = false;
           es.close();
@@ -279,7 +285,7 @@
           .then(function(d) { if (d.parts) renderDownloads(d.parts); });
         return;
       }
-      if (data.status === 'failed' || data.status === 'cancelled') {
+      if (data.status === 'failed' || data.status === 'cancelled' || data.status === 'deleted') {
         _isTerminal = true;
         return;
       }

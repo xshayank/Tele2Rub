@@ -146,6 +146,12 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
                     "S2 objects deleted after 1-hour TTL",
                     extra={"job_id": jid, "deleted": count},
                 )
+                # Mark job as deleted so the UI can reflect the file removal
+                async with _engine_mod.get_async_session() as session:
+                    job = await session.get(Job, jid)
+                    if job is not None and job.status == "completed":
+                        job.status = "deleted"
+                app.state.event_bus.publish(jid, {"type": "job.deleted", "job_id": jid})
             except Exception as exc:
                 logger.error(
                     "Failed to delete S2 objects after TTL",

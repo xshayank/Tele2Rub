@@ -3,6 +3,9 @@
 {% block content %}
 <h1 class="page-title">🎵 دانلود موسیقی</h1>
 
+<div id="quota-bar" style="display:none" class="card" style="padding:0.9rem 1.2rem; margin-bottom:1rem">
+</div>
+
 <div class="card">
   <div id="msg"></div>
   <form id="submit-form">
@@ -73,6 +76,34 @@
 {% endblock %}
 {% block scripts %}
 <script>
+// Load and display quota info
+(function() {
+  var token = window.getToken();
+  if (!token) return;
+  window.authFetch('/auth/me').then(function(r) {
+    if (!r || !r.ok) return;
+    return r.json();
+  }).then(function(data) {
+    if (!data || data.job_limit == null) return;
+    var bar = document.getElementById('quota-bar');
+    if (!bar) return;
+    var used = data.quota_used != null ? data.quota_used : 0;
+    var remaining = data.jobs_remaining != null ? data.jobs_remaining : (data.job_limit - used);
+    var pct = Math.min(100, Math.round(used / data.job_limit * 100));
+    var color = pct >= 90 ? 'var(--danger)' : pct >= 70 ? 'var(--warning)' : 'var(--accent)';
+    var expText = data.job_limit_expires_at ? ' (تا ' + data.job_limit_expires_at.slice(0, 10) + ')' : '';
+    bar.style.display = '';
+    bar.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;gap:0.5rem">' +
+        '<span style="font-size:0.88rem;color:var(--muted)">📊 سهمیه جاب' + expText + '</span>' +
+        '<span style="font-size:0.88rem" class="num"><strong>' + used + '</strong> / ' + data.job_limit + ' استفاده شده &nbsp;·&nbsp; <strong style="color:' + color + '">' + remaining + '</strong> باقی‌مانده</span>' +
+      '</div>' +
+      '<div style="background:var(--border);border-radius:9999px;height:0.45rem;overflow:hidden">' +
+        '<div style="width:' + pct + '%;height:100%;background:' + color + ';border-radius:9999px;transition:width 0.4s ease"></div>' +
+      '</div>';
+  }).catch(function() {});
+})();
+
 // Show/hide quality rows based on selected platform
 function updateQualityRows() {
   var platform = document.getElementById('platform').value;
