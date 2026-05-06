@@ -62,7 +62,7 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
         SearchResult,
     )
     from iran.db import engine as _engine_mod
-    from iran.db.models import AuditLog, Job, Setting
+    from iran.db.models import AuditLog, Job, Setting, User
 
     async def on_job_accepted(msg: JobAccepted) -> None:
         """Update job status to 'accepted' and publish to EventBus."""
@@ -122,6 +122,28 @@ def _make_handlers(app: FastAPI) -> dict[str, Any]:
             job.completed_at = datetime.now(tz=timezone.utc)
             job.s2_keys = [p.model_dump() for p in msg.parts]
             job.metadata_json = msg.metadata
+
+            # Deduct extra quota for large files: each full GB over 2 GB costs
+            # one additional job from the user's quota (job_limit).
+            _ONE_GB = 1_073_741_824  # 1 GiB in bytes
+            total_bytes = sum(p.size for p in msg.parts)
+            if total_bytes > 2 * _ONE_GB:
+                extra_gb = int((total_bytes - 2 * _ONE_GB) // _ONE_GB)
+                if extra_gb > 0:
+                    user = await session.get(User, job.user_id)
+                    if user is not None and user.job_limit is not None:
+                        user.job_limit = max(0, user.job_limit - extra_gb)
+                        logger.info(
+                            "Large file quota deduction",
+                            extra={
+                                "job_id": msg.job_id,
+                                "user_id": job.user_id,
+                                "total_bytes": total_bytes,
+                                "extra_gb": extra_gb,
+                                "new_job_limit": user.job_limit,
+                            },
+                        )
+
             # A slot opened — promote the next queued job (if any)
             await _maybe_dequeue_next_job(app.state.rubika_client, session)
         event = {
