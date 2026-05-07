@@ -259,6 +259,12 @@ class TestAudioCodec:
     def test_mp3(self) -> None:
         assert _audio_codec("mp3") == "mp3"
 
+    def test_flac(self) -> None:
+        assert _audio_codec("flac") == "flac"
+
+    def test_unknown_defaults_to_mp3(self) -> None:
+        assert _audio_codec("unknown") == "mp3"
+
 
 class TestInstagramBuildCommand:
     def test_uses_instagram_sorting(self) -> None:
@@ -280,12 +286,6 @@ class TestInstagramBuildCommand:
         )
         assert "--cookies" in cmd
         assert "/tmp/cookies.txt" in cmd
-
-    def test_flac(self) -> None:
-        assert _audio_codec("flac") == "flac"
-
-    def test_unknown_defaults_to_mp3(self) -> None:
-        assert _audio_codec("unknown") == "mp3"
 
 
 # ===========================================================================
