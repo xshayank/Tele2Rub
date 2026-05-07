@@ -456,7 +456,9 @@
           return arr.join(' | ');
         }
         if (typeof value === 'object') {
-          if (typeof value.detail === 'string') return value.detail;
+          if (Object.prototype.hasOwnProperty.call(value, 'detail')) {
+            return normalizeErrorDetail(value.detail);
+          }
           if (typeof value.message === 'string') return value.message;
           if (typeof value.msg === 'string') {
             if (Array.isArray(value.loc) && value.loc.length > 0) {
@@ -464,10 +466,16 @@
             }
             return value.msg;
           }
+          var nested = Object.keys(value)
+            .map(function (key) { return normalizeErrorDetail(value[key]); })
+            .filter(Boolean);
+          if (nested.length > 0) {
+            return nested.join(' | ');
+          }
           try {
             return JSON.stringify(value);
           } catch (_) {
-            return String(value);
+            return '';
           }
         }
         return String(value);
