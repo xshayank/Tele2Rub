@@ -31,6 +31,7 @@ from kharej.downloaders.youtube import (
     _is_audio_quality,
     _resolve_format,
 )
+from kharej.downloaders.instagram import _build_command as _build_instagram_command
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -263,6 +264,28 @@ class TestAudioCodec:
 
     def test_unknown_defaults_to_mp3(self) -> None:
         assert _audio_codec("unknown") == "mp3"
+
+
+class TestInstagramBuildCommand:
+    def test_uses_instagram_sorting(self) -> None:
+        cmd = _build_instagram_command(
+            "/usr/bin/yt-dlp",
+            "https://www.instagram.com/reel/abc/",
+            "/tmp/%(title)s.%(ext)s",
+            None,
+        )
+        assert "-S" in cmd
+        assert "proto,ext:mp4,res,br" in cmd
+
+    def test_passes_cookies_when_provided(self) -> None:
+        cmd = _build_instagram_command(
+            "/usr/bin/yt-dlp",
+            "https://www.instagram.com/reel/abc/",
+            "/tmp/%(title)s.%(ext)s",
+            "/tmp/cookies.txt",
+        )
+        assert "--cookies" in cmd
+        assert "/tmp/cookies.txt" in cmd
 
 
 # ===========================================================================
@@ -1238,4 +1261,3 @@ async def test_spotify_mp3_falls_back_to_musicdl() -> None:
             )
 
     assert result.suffix == ".mp3"
-

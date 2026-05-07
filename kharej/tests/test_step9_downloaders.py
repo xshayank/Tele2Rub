@@ -855,7 +855,7 @@ class TestDispatcherRegistration:
 
     @pytest.mark.parametrize(
         "platform",
-        ["tidal", "qobuz", "amazon", "soundcloud", "bandcamp", "musicdl"],
+        ["tidal", "qobuz", "amazon", "soundcloud", "bandcamp", "instagram", "musicdl"],
     )
     def test_dispatcher_has_step9_platform(self, platform: str) -> None:
         """Dispatcher.has() must return True for each Step 9 platform."""
@@ -865,8 +865,18 @@ class TestDispatcherRegistration:
         )
 
     def test_dispatcher_has_all_platforms(self) -> None:
-        """Dispatcher must have all eight canonical platforms registered."""
+        """Dispatcher must have all canonical platforms registered."""
         dispatcher = self._make_dispatcher()
-        required = {"youtube", "spotify", "tidal", "qobuz", "amazon", "soundcloud", "bandcamp", "musicdl"}
+        required = {
+            "youtube",
+            "spotify",
+            "tidal",
+            "qobuz",
+            "amazon",
+            "soundcloud",
+            "bandcamp",
+            "instagram",
+            "musicdl",
+        }
         missing = {p for p in required if not dispatcher.has(p)}
         assert not missing, f"Dispatcher missing platforms: {missing}"
