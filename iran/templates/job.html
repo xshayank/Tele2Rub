@@ -139,7 +139,7 @@
     parts.forEach(function(part, i) {
       var filename = part.key ? part.key.split('/').pop() : ('بخش ' + (i + 1));
       var size = formatBytes(part.size);
-      var mime = part.mime_type || '';
+      var mime = part.mime || part.mime_type || '';
       html += '<div class="download-card">';
       html += '<div><div class="filename">' + filename + '</div>';
       html += '<div class="meta">' + size + (mime ? ' · ' + mime : '') + '</div></div>';
@@ -186,10 +186,10 @@
     if (data.type === 'job.completed' && data.parts) {
       renderDownloads(data.parts);
     }
-    if (data.type === 'job.failed') {
+    if (type === 'job.failed' || type === 'failed') {
       var code = data.error_code || 'internal_error';
-      var msg = errorMessages[code] || data.message || 'خطای ناشناخته';
-      errorBox.innerHTML = '<div class="alert alert-error">' + msg + '</div>';
+      var errMsg = errorMessages[code] || data.message || data.error_message || 'خطای ناشناخته';
+      errorBox.innerHTML = '<div class="alert alert-error">' + errMsg + '</div>';
     }
     if (data.type === 'job.deleted' || data.status === 'deleted') {
       downloadList.innerHTML = '';

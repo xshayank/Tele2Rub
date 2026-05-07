@@ -174,7 +174,14 @@ document.getElementById('submit-form').addEventListener('submit', async function
     window.location.href = '/ui/jobs/' + data.job_id;
   } else {
     var err = await resp.json();
-    msg.innerHTML = '<div class="alert alert-error">' + (err.detail || 'خطا در ارسال درخواست') + '</div>';
+    var errDetail = err.detail;
+    var errText = typeof errDetail === 'string'
+      ? errDetail
+      : (Array.isArray(errDetail) && errDetail.length > 0
+          ? errDetail.map(function(e) { return e.msg || JSON.stringify(e); }).join(' · ')
+          : null)
+      || 'خطا در ارسال درخواست';
+    msg.innerHTML = '<div class="alert alert-error">' + errText + '</div>';
     submitBtn.disabled = false;
     submitBtn.textContent = 'ارسال درخواست';
   }
