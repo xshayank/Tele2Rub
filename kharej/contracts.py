@@ -61,6 +61,7 @@ class Platform(str, Enum):
     """Media platforms supported by the Kharej Worker."""
 
     youtube = "youtube"
+    instagram = "instagram"
     spotify = "spotify"
     tidal = "tidal"
     qobuz = "qobuz"

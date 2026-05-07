@@ -264,6 +264,11 @@ class TestValidateJobUrl:
 
         validate_job_url("https://bandcamp.com/track/xyz")
 
+    def test_allows_instagram(self):
+        from iran.api.jobs import validate_job_url
+
+        validate_job_url("https://www.instagram.com/reel/Cx123456789/")
+
     def test_rejects_unknown_domain(self):
         from fastapi import HTTPException
 

@@ -58,6 +58,9 @@ ALLOWED_DOMAINS: set[str] = {
     "soundcloud.com",
     "www.soundcloud.com",
     "bandcamp.com",
+    "instagram.com",
+    "www.instagram.com",
+    "m.instagram.com",
 }
 
 # ---------------------------------------------------------------------------

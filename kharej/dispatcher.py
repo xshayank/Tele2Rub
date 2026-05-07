@@ -165,6 +165,7 @@ class Dispatcher:
             from kharej.downloaders.amazon import AmazonDownloader
             from kharej.downloaders.bandcamp import BandcampDownloader
             from kharej.downloaders.batch import BatchDownloader
+            from kharej.downloaders.instagram import InstagramDownloader
             from kharej.downloaders.musicdl import MusicdlDownloader
             from kharej.downloaders.qobuz import QobuzDownloader
             from kharej.downloaders.soundcloud import SoundcloudDownloader
@@ -175,6 +176,7 @@ class Dispatcher:
 
             stub = StubDownloader()
             yt = YoutubeDownloader()
+            ig = InstagramDownloader()
             sp = SpotifyDownloader()
             tidal = TidalDownloader()
             qobuz = QobuzDownloader()
@@ -185,6 +187,7 @@ class Dispatcher:
             batch = BatchDownloader(
                 per_track_downloaders={
                     yt.platform: yt,
+                    ig.platform: ig,
                     sp.platform: sp,
                     tidal.platform: tidal,
                     qobuz.platform: qobuz,
@@ -196,6 +199,7 @@ class Dispatcher:
             self._downloaders = {
                 stub.platform: stub,
                 yt.platform: yt,
+                ig.platform: ig,
                 sp.platform: sp,
                 tidal.platform: tidal,
                 qobuz.platform: qobuz,

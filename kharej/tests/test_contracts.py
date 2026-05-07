@@ -71,6 +71,7 @@ def test_platform_values() -> None:
         Platform.amazon,
         Platform.soundcloud,
         Platform.bandcamp,
+        Platform.instagram,
         Platform.musicdl,
     }
 
