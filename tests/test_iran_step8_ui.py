@@ -258,6 +258,16 @@ class TestUIPageContent:
         assert "rube_desktop.svg" in resp.text or "rube_mobile.svg" in resp.text
 
     @pytest.mark.asyncio
+    async def test_pages_include_error_normalizer_helper(self, client):
+        """Base template should expose shared API error formatting helper."""
+        home = await client.get("/")
+        job = await client.get(f"/ui/jobs/{uuid.uuid4()}")
+        search = await client.get("/search")
+        assert "window.getApiErrorMessage" in home.text
+        assert "window.getApiErrorMessage" in job.text
+        assert "window.getApiErrorMessage" in search.text
+
+    @pytest.mark.asyncio
     async def test_static_mobile_svg_ok(self, client):
         """GET /static/rube_mobile.svg must return 200 with image/svg+xml."""
         resp = await client.get("/static/rube_mobile.svg")

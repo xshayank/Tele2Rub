@@ -446,6 +446,41 @@
       window.setToken = setToken;
       window.clearToken = clearToken;
 
+      function normalizeErrorDetail(value) {
+        if (value == null) return '';
+        if (typeof value === 'string') return value;
+        if (Array.isArray(value)) {
+          var arr = value
+            .map(function (item) { return normalizeErrorDetail(item); })
+            .filter(Boolean);
+          return arr.join(' | ');
+        }
+        if (typeof value === 'object') {
+          if (typeof value.detail === 'string') return value.detail;
+          if (typeof value.message === 'string') return value.message;
+          if (typeof value.msg === 'string') {
+            if (Array.isArray(value.loc) && value.loc.length > 0) {
+              return value.loc.join('.') + ': ' + value.msg;
+            }
+            return value.msg;
+          }
+          try {
+            return JSON.stringify(value);
+          } catch (_) {
+            return String(value);
+          }
+        }
+        return String(value);
+      }
+
+      window.getApiErrorMessage = function (payload, fallback) {
+        var detail = payload && Object.prototype.hasOwnProperty.call(payload, 'detail')
+          ? payload.detail
+          : payload;
+        var text = normalizeErrorDetail(detail);
+        return text || fallback || 'خطای ناشناخته';
+      };
+
       // authFetch: like fetch() but auto-refreshes on 401
       window.authFetch = async function(url, options) {
         options = options || {};

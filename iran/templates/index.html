@@ -173,8 +173,8 @@ document.getElementById('submit-form').addEventListener('submit', async function
     var data = await resp.json();
     window.location.href = '/ui/jobs/' + data.job_id;
   } else {
-    var err = await resp.json();
-    msg.innerHTML = '<div class="alert alert-error">' + (err.detail || 'خطا در ارسال درخواست') + '</div>';
+    var err = await resp.json().catch(function() { return {}; });
+    msg.innerHTML = '<div class="alert alert-error">' + window.getApiErrorMessage(err, 'خطا در ارسال درخواست') + '</div>';
     submitBtn.disabled = false;
     submitBtn.textContent = 'ارسال درخواست';
   }

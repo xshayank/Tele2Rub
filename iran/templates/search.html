@@ -169,7 +169,7 @@
       window.location.href = '/ui/jobs/' + data.job_id;
     } else {
       var err = await resp.json().catch(function() { return {}; });
-      alert('خطا در شروع دانلود: ' + (err.detail || 'خطای ناشناخته'));
+      alert('خطا در شروع دانلود: ' + window.getApiErrorMessage(err, 'خطای ناشناخته'));
     }
   }
 
@@ -345,7 +345,7 @@
 
       if (!resp.ok) {
         var err = await resp.json().catch(function() { return {}; });
-        setMsg('<div class="alert alert-error">' + escHtml(err.detail || 'خطا در جستجو') + '</div>');
+        setMsg('<div class="alert alert-error">' + escHtml(window.getApiErrorMessage(err, 'خطا در جستجو')) + '</div>');
         return;
       }
 
