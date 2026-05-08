@@ -169,7 +169,10 @@
     var btn = e.target.closest('button.js-download-btn');
     if (!btn) return;
     var part = parseInt(btn.getAttribute('data-part') || '', 10);
-    if (!Number.isInteger(part) || part < 0 || part >= _downloadParts.length) return;
+    if (!Number.isInteger(part) || part < 0 || part >= _downloadParts.length) {
+      console.warn('Invalid download part index:', part);
+      return;
+    }
     var mode = btn.getAttribute('data-mode') || 'download';
     var partInfo = _downloadParts[part] || {};
     var rawKey = typeof partInfo.key === 'string' ? partInfo.key.trim() : '';
