@@ -42,6 +42,9 @@ _ALLOWED_THUMB_HOSTS: frozenset[str] = frozenset(
         "i.scdn.co",  # Spotify cover art
         "mosaic.scdn.co",  # Spotify mosaic covers
         "lineup-images.scdn.co",  # Spotify playlist headers
+        "pickasso.spotifycdn.com",  # Spotify CDN (canvas/artwork)
+        "image-cdn-ak.spotifycdn.com",  # Spotify CDN (AK edge)
+        "image-cdn-fa.spotifycdn.com",  # Spotify CDN (FA edge)
     }
 )
 
