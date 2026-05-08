@@ -92,6 +92,7 @@
   var _isTerminal = false;
   var _sseActive = false;
   var _pollTimer = null;
+  var _downloadParts = [];
   var POLL_INTERVAL_MS = 5000;
 
   var statusLabels = {
@@ -132,8 +133,18 @@
     return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
   }
 
+  function escapeHtml(text) {
+    return String(text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   function renderDownloads(parts) {
     if (!parts || parts.length === 0) return;
+    _downloadParts = parts.slice();
     var html = '<h2>دانلود فایل‌ها</h2>';
     if (parts.length > 1) {
       html += '<p style="font-size:0.85rem;color:var(--muted);margin-bottom:0.75rem">برای فایل‌های چند بخشی از 7-Zip برای استخراج استفاده کنید.</p>';
@@ -143,16 +154,27 @@
       var size = formatBytes(part.size);
       var mime = part.mime_type || '';
       html += '<div class="download-card">';
-      html += '<div><div class="filename">' + filename + '</div>';
-      html += '<div class="meta">' + size + (mime ? ' · ' + mime : '') + '</div></div>';
+      html += '<div><div class="filename">' + escapeHtml(filename) + '</div>';
+      html += '<div class="meta">' + escapeHtml(size + (mime ? ' · ' + mime : '')) + '</div></div>';
       html += '<div class="dl-actions">';
-      html += '<button class="btn btn-primary" onclick="doDownload(\'' + JOB_ID + '\',' + i + ',\'download\',' + JSON.stringify(filename) + ')">⬇ دانلود</button>';
-      html += '<button class="btn btn-secondary" onclick="doDownload(\'' + JOB_ID + '\',' + i + ',\'stream\')">▶ پخش</button>';
+      html += '<button class="btn btn-primary js-download-btn" data-mode="download" data-part="' + i + '">⬇ دانلود</button>';
+      html += '<button class="btn btn-secondary js-download-btn" data-mode="stream" data-part="' + i + '">▶ پخش</button>';
       html += '</div>';
       html += '</div>';
     });
     downloadList.innerHTML = html;
   }
+
+  downloadList.addEventListener('click', function(e) {
+    var btn = e.target.closest('button.js-download-btn');
+    if (!btn) return;
+    var part = parseInt(btn.getAttribute('data-part') || '', 10);
+    if (!Number.isInteger(part) || part < 0) return;
+    var mode = btn.getAttribute('data-mode') || 'download';
+    var partInfo = _downloadParts[part] || {};
+    var filename = partInfo.key ? partInfo.key.split('/').pop() : ('part-' + part);
+    doDownload(JOB_ID, part, mode, filename);
+  });
 
   function applyUpdate(data) {
     var type = data.type || data.status;
