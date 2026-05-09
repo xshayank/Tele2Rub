@@ -61,8 +61,6 @@ _PROXY_ERROR_KEYWORDS: tuple[str, ...] = (
     "no route to host",
     "remotedisconnected",
     "connection reset",
-    "ssl",
-    "certificate",
     "errno",
 )
 

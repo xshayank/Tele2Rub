@@ -222,7 +222,7 @@ def _http_youtube_check(proxy_url: str) -> bool:
             stream=False,
         )
         # Any HTTP response means the proxy forwarded the request successfully.
-        return resp.status_code is not None
+        return True
     except Exception:
         return False
 
