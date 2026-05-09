@@ -87,10 +87,18 @@ _SPEEDTEST_SAMPLE_BYTES: int = 30 * 1024  # 30 KB
 _MIN_SPEED_BPS: float = 30 * 1024  # 30 KB/s
 
 #: Seconds before a validation attempt is considered failed.
-_VALIDATE_TIMEOUT: float = 15.0
+_VALIDATE_TIMEOUT: float = 12.0
 
 #: How many proxies to validate concurrently.
-_VALIDATE_WORKERS: int = 50
+_VALIDATE_WORKERS: int = 60
+
+#: URL used to verify that the proxy can reach YouTube's HTTPS endpoints.
+#: A successful response (any HTTP status) proves that the proxy supports
+#: HTTPS CONNECT tunnelling to Google/YouTube servers.
+_YOUTUBE_CHECK_URL: str = "https://www.youtube.com/generate_204"
+
+#: Timeout (seconds) for the YouTube HTTPS connectivity check.
+_YOUTUBE_CHECK_TIMEOUT: float = 10.0
 
 #: Seconds between automatic proxy list refreshes (15 minutes).
 _REFRESH_INTERVAL: float = 900.0
@@ -187,6 +195,53 @@ def _http_speed_check(proxy_url: str) -> bool:
         return False
 
 
+def _http_youtube_check(proxy_url: str) -> bool:
+    """Return True if the proxy can reach YouTube's HTTPS endpoint.
+
+    Sends a GET request to :data:`_YOUTUBE_CHECK_URL` (a YouTube no-content
+    endpoint) through *proxy_url*.  Any HTTP response — including redirects
+    and 4xx status codes — is treated as success because it proves that the
+    proxy can establish an HTTPS CONNECT tunnel to Google/YouTube servers.
+
+    This catches a large class of proxies that pass the plain-HTTP speed test
+    but cannot proxy HTTPS traffic (the most common cause of yt-dlp
+    ``ConnectTimeoutError`` / "Unable to connect to proxy" failures).
+    """
+    try:
+        import requests  # noqa: PLC0415
+    except ImportError:
+        return True  # If requests is missing, skip the check rather than blocking all proxies
+
+    proxies = {"http": proxy_url, "https": proxy_url}
+    try:
+        resp = requests.get(
+            _YOUTUBE_CHECK_URL,
+            proxies=proxies,
+            timeout=_YOUTUBE_CHECK_TIMEOUT,
+            allow_redirects=False,
+            stream=False,
+        )
+        # Any HTTP response means the proxy forwarded the request successfully.
+        return resp.status_code is not None
+    except Exception:
+        return False
+
+
+def _validate_single_proxy(proxy_url: str) -> bool:
+    """Return True only if *proxy_url* passes both the speed test and the YouTube check.
+
+    Both checks must succeed:
+
+    * :func:`_http_speed_check` — adequate download throughput via plain HTTP.
+    * :func:`_http_youtube_check` — can establish an HTTPS tunnel to YouTube.
+
+    Requiring both filters eliminates proxies that are fast enough but cannot
+    proxy HTTPS traffic, which is the primary source of real-world yt-dlp
+    proxy failures.
+    """
+    return _http_speed_check(proxy_url) and _http_youtube_check(proxy_url)
+
+
 def _parse_proxy_line(line: str) -> str | None:
     """Parse a proxy list line into an ``http://host:port`` URL or ``None``.
 
@@ -273,7 +328,7 @@ def _validate_proxies(proxy_urls: Sequence[str]) -> list[str]:
     lock = threading.Lock()
 
     def _check(proxy_url: str) -> None:
-        if _http_speed_check(proxy_url):
+        if _validate_single_proxy(proxy_url):
             with lock:
                 results.append(proxy_url)
 

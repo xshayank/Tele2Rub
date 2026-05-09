@@ -43,7 +43,7 @@ _PERCENT_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)\s*%")
 _SPEED_RE = re.compile(r"at\s+([\d.]+\s*\S+/s)")
 
 #: Maximum number of proxy-retry attempts before giving up on a download.
-_MAX_PROXY_RETRIES: int = 3
+_MAX_PROXY_RETRIES: int = 5
 
 #: Substrings in a yt-dlp error message that indicate a proxy/network failure
 #: (as opposed to an unavailable video or auth error).
@@ -52,13 +52,17 @@ _PROXY_ERROR_KEYWORDS: tuple[str, ...] = (
     "socks",
     "connection refused",
     "connection timed out",
+    "connecttimeouterror",
     "timed out",
     "cannot connect",
     "failed to connect",
+    "unable to connect",
     "network is unreachable",
     "no route to host",
     "remotedisconnected",
     "connection reset",
+    "ssl",
+    "certificate",
     "errno",
 )
 
@@ -168,7 +172,8 @@ def _build_command(
         "--no-check-formats",
         "--ignore-no-formats-error",
     ]
-    cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
+    if cookies_path:
+        cmd += ["--cookies", cookies_path]
 
     if proxy:
         cmd += ["--proxy", proxy]
