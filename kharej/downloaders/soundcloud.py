@@ -70,11 +70,11 @@ def _is_proxy_error(error_msg: str) -> bool:
         return True
 
     meaningful_lines = [
-        line
+        stripped
         for line in error_msg.splitlines()
-        if line.strip()
-        and not line.strip().startswith("yt-dlp exited")
-        and not any(line.strip().startswith(pfx) for pfx in _YTDLP_PROGRESS_PREFIXES)
+        if (stripped := line.strip())
+        and not stripped.startswith("yt-dlp exited")
+        and not any(stripped.startswith(pfx) for pfx in _YTDLP_PROGRESS_PREFIXES)
     ]
     return len(meaningful_lines) == 0
 

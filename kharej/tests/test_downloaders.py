@@ -1269,7 +1269,7 @@ async def test_spotify_mp3_falls_back_to_musicdl() -> None:
 
 
 class TestIsProxyError:
-    """Unit tests for the youtube _is_proxy_error helper.
+    """Unit tests for the _is_proxy_error helper (youtube and soundcloud downloaders).
 
     Verifies that mid-download proxy drops (where yt-dlp exits non-zero but
     the only output is ``[download] X%`` progress lines) are correctly detected
