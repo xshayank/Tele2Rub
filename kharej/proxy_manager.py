@@ -14,8 +14,9 @@ downloaders should use::
     from kharej.proxy_manager import proxy_manager
 
     proxy_url = proxy_manager.get_proxy()           # "http://ip:port" or None
-    proxy_manager.mark_proxy_succeeded(proxy_url)   # record a successful download
-    proxy_manager.mark_proxy_failed(proxy_url)      # evict a bad proxy immediately
+    if proxy_url:
+        proxy_manager.mark_proxy_succeeded(proxy_url)   # record a successful download
+    proxy_manager.mark_proxy_failed(proxy_url)      # safe to call with None (no-op)
     await proxy_manager.start()                     # begin background refresh
     await proxy_manager.stop()                      # cancel background refresh
 
@@ -85,6 +86,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import random
 import tempfile
@@ -247,12 +249,26 @@ def _load_proxy_cache(path: Path) -> dict[str, _ProxyRecord]:
                 url = item.get("url")
                 if not isinstance(url, str) or not url:
                     continue
-                records[url] = _ProxyRecord(
-                    speed_bps=float(item.get("speed_bps") or _MIN_SPEED_BPS),
-                    successes=int(item.get("successes") or 0),
+                try:
+                    raw_speed = float(item.get("speed_bps") or _MIN_SPEED_BPS)
+                    # Reject NaN/Inf and speeds below the minimum threshold.
+                    if not math.isfinite(raw_speed) or raw_speed < _MIN_SPEED_BPS:
+                        raw_speed = _MIN_SPEED_BPS
+                    raw_successes = max(0, int(item.get("successes") or 0))
                     # max(1, ...) guards against 0 or negative values that could
                     # appear in manually edited or corrupted cache files.
-                    scan_passes=max(1, int(item.get("scan_passes") or 0)),
+                    raw_scan_passes = max(1, int(item.get("scan_passes") or 0))
+                except (ValueError, TypeError):
+                    # Malformed numeric field — skip this entry rather than
+                    # dropping the entire cache.
+                    logger.debug(
+                        {"event": "proxy_manager.cache_bad_entry", "url": url, "item": item}
+                    )
+                    continue
+                records[url] = _ProxyRecord(
+                    speed_bps=raw_speed,
+                    successes=raw_successes,
+                    scan_passes=raw_scan_passes,
                 )
         return records
     except Exception:
@@ -644,6 +660,15 @@ class ProxyManager:
             valid = self._live_proxies(self._working, now)
             if not valid:
                 return None
+            # Re-rank by current composite weight so that success-counter changes
+            # made between refreshes are reflected in the top-N selection, rather
+            # than relying on the ordering established at the last refresh.
+            valid.sort(
+                key=lambda u: _compute_proxy_weight(
+                    self._proxy_records.get(u, _ProxyRecord(speed_bps=_MIN_SPEED_BPS))
+                ),
+                reverse=True,
+            )
             pool = valid[:_TOP_PROXY_COUNT]
             weights = [
                 # Every proxy in _working always has a corresponding record.
@@ -656,14 +681,16 @@ class ProxyManager:
             ]
             return random.choices(pool, weights=weights, k=1)[0]
 
-    def mark_proxy_succeeded(self, proxy_url: str) -> None:
+    def mark_proxy_succeeded(self, proxy_url: str | None) -> None:
         """Record a successful download through *proxy_url*.
 
         Increments the proxy's success counter so that future weighted
-        selection favours it more strongly.  If the proxy is no longer in the
-        working pool (e.g. evicted by a concurrent failure) the call is a
-        no-op.
+        selection favours it more strongly.  If *proxy_url* is ``None`` or
+        the proxy is no longer in the working pool (e.g. evicted by a
+        concurrent failure) the call is a no-op.
         """
+        if proxy_url is None:
+            return
         with self._lock:
             rec = self._proxy_records.get(proxy_url)
             if rec is None:
@@ -681,14 +708,17 @@ class ProxyManager:
             }
         )
 
-    def mark_proxy_failed(self, proxy_url: str) -> None:
+    def mark_proxy_failed(self, proxy_url: str | None) -> None:
         """Evict *proxy_url* from the working pool immediately.
 
         Call this when a download fails with a proxy-related error so that
         subsequent requests from other jobs do not reuse the broken proxy.
+        If *proxy_url* is ``None`` the call is a no-op.
         If the pool becomes empty after the eviction, a background refresh is
         triggered automatically.
         """
+        if proxy_url is None:
+            return
         with self._lock:
             try:
                 self._working.remove(proxy_url)
