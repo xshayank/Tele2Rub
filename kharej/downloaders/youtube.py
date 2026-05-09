@@ -346,4 +346,4 @@ class YoutubeDownloader:
                 return [ref]
 
         # All proxy attempts exhausted — re-raise the last exception
-        raise last_exc  # type: ignore[misc]
+        raise last_exc or RuntimeError("all proxy attempts failed")  # type: ignore[misc]

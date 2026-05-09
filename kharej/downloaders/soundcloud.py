@@ -159,4 +159,4 @@ class SoundcloudDownloader:
                 await progress.report_progress(job.job_id, 100, phase="uploading")
                 return [ref]
 
-        raise last_exc  # type: ignore[misc]
+        raise last_exc or RuntimeError("all proxy attempts failed")  # type: ignore[misc]
