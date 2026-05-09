@@ -125,6 +125,16 @@ _YOUTUBE_CHECK_TIMEOUT: float = 10.0
 #: downloads preferentially use high-throughput proxies.
 _TOP_PROXY_COUNT: int = 50
 
+#: Maximum thread-pool workers for parallel source fetching.
+#: Caps the number of concurrent HTTP scrapers to avoid excessive thread
+#: creation when the sources list grows.
+_FETCH_WORKERS: int = 10
+
+#: Speed multiplier applied when a proxy responds almost instantly (< 10 ms).
+#: In this case, elapsed time is too small to compute a reliable bps value so
+#: we award the proxy a high synthetic speed rather than treating it as broken.
+_INSTANT_RESPONSE_SPEED_MULTIPLIER: float = 10.0
+
 #: Seconds between automatic proxy list refreshes (15 minutes).
 _REFRESH_INTERVAL: float = 900.0
 
@@ -209,7 +219,7 @@ def _http_speed_check(proxy_url: str) -> float:
                 return 0.0
             if elapsed < 0.01:
                 # Nearly instant — treat as max speed but require full sample.
-                return float(_MIN_SPEED_BPS * 10)
+                return float(_MIN_SPEED_BPS * _INSTANT_RESPONSE_SPEED_MULTIPLIER)
             speed = downloaded / elapsed
             return speed if speed >= _MIN_SPEED_BPS else 0.0
 
@@ -372,7 +382,7 @@ def _fetch_all_proxy_lists(sources: list[str]) -> list[str]:
                     seen.add(proxy)
                     combined.append(proxy)
 
-    with ThreadPoolExecutor(max_workers=len(sources)) as executor:
+    with ThreadPoolExecutor(max_workers=min(len(sources), _FETCH_WORKERS)) as executor:
         list(executor.map(_fetch_and_collect, sources))
 
     logger.info(
