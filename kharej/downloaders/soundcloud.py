@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kharej.downloaders.soundcloud")
 
 #: Maximum number of proxy-retry attempts before giving up on a download.
-_MAX_PROXY_RETRIES: int = 3
+_MAX_PROXY_RETRIES: int = 5
 
 #: Substrings in an error message that indicate a proxy/network failure.
 _PROXY_ERROR_KEYWORDS: tuple[str, ...] = (
@@ -42,9 +42,11 @@ _PROXY_ERROR_KEYWORDS: tuple[str, ...] = (
     "socks",
     "connection refused",
     "connection timed out",
+    "connecttimeouterror",
     "timed out",
     "cannot connect",
     "failed to connect",
+    "unable to connect",
     "network is unreachable",
     "no route to host",
     "remotedisconnected",
