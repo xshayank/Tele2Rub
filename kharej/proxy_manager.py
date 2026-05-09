@@ -469,6 +469,9 @@ class ProxyManager:
         # Per-proxy validation timestamps.  Proxies older than _PROXY_TTL_SECONDS are evicted.
         self._proxy_timestamps: dict[str, float] = {}
         # Pre-populate from disk so requests succeed immediately after restart.
+        # Cached proxies are granted a fresh TTL because start() always triggers
+        # an immediate full refresh that will validate and re-stamp them before
+        # the 20-minute window elapses.
         cached = _load_proxy_cache(self._cache_file)
         now = time.time()
         self._working: list[str] = cached
@@ -510,6 +513,13 @@ class ProxyManager:
     # Public API
     # ------------------------------------------------------------------
 
+    def _live_proxies(self, proxies: list[str], now: float) -> list[str]:
+        """Return *proxies* that have not yet exceeded :data:`_PROXY_TTL_SECONDS`.
+
+        Must be called with :attr:`_lock` held (or on a private list copy).
+        """
+        return [p for p in proxies if now - self._proxy_timestamps.get(p, 0.0) <= _PROXY_TTL_SECONDS]
+
     def get_proxy(self) -> str | None:
         """Return a random working ``http://host:port`` proxy URL, or ``None``.
 
@@ -523,11 +533,7 @@ class ProxyManager:
         """
         now = time.time()
         with self._lock:
-            valid = [
-                p
-                for p in self._working
-                if now - self._proxy_timestamps.get(p, 0.0) <= _PROXY_TTL_SECONDS
-            ]
+            valid = self._live_proxies(self._working, now)
             if not valid:
                 return None
             pool = valid[:_TOP_PROXY_COUNT]
@@ -618,15 +624,15 @@ class ProxyManager:
 
         Returns a ``(evicted, remaining)`` tuple.  Callers should trigger a
         background refresh when *remaining* reaches zero.
+
+        Note: if a previous refresh already left the pool empty, subsequent
+        calls will return ``(0, 0)`` and the periodic 15-minute refresh cadence
+        will handle replenishment — no extra retry loop is needed.
         """
         now = time.time()
         with self._lock:
             before = len(self._working)
-            self._working = [
-                p
-                for p in self._working
-                if now - self._proxy_timestamps.get(p, 0.0) <= _PROXY_TTL_SECONDS
-            ]
+            self._working = self._live_proxies(self._working, now)
             evicted = before - len(self._working)
             if evicted:
                 current = set(self._working)
