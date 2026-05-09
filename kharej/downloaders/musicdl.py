@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from kharej.contracts import S2ObjectRef, make_media_key
 from kharej.downloaders.common import safe_filename
+from kharej.proxy_manager import proxy_manager
 
 if TYPE_CHECKING:
     from kharej.dispatcher import Job
@@ -84,7 +85,7 @@ class MusicdlDownloader:
         await progress.report_progress(job.job_id, 0, phase="downloading")
 
         try:
-            client = MusicdlClient(sources=sources)
+            client = MusicdlClient(sources=sources, proxy=proxy_manager.get_proxy())
         except MusicdlNotInstalledError as exc:
             raise RuntimeError(
                 "musicdl Python package is not installed; install musicdl to use this platform"

@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from kharej.contracts import S2ObjectRef, make_media_key, make_thumb_key
 from kharej.downloaders.common import resolve_cookies_path, safe_filename
+from kharej.proxy_manager import proxy_manager
 
 if TYPE_CHECKING:
     from kharej.dispatcher import Job
@@ -90,7 +91,8 @@ async def _download_spotify_track_locally(
         try:
             from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
 
-            client = MusicdlClient(sources=[source_name])
+            _proxy = proxy_manager.get_proxy()
+            client = MusicdlClient(sources=[source_name], proxy=_proxy)
             musicdl_query = f"{artist} - {title}" if artist else title
             search_result = await client.search(musicdl_query, sources=[source_name], limit=3)
             for track in search_result.tracks[:3]:
@@ -144,6 +146,10 @@ async def _download_spotify_track_locally(
                 "quiet": True,
             }
             ydl_opts["cookiefile"] = "/root/newrube/RubeTunes/kharej/cookies.txt"
+
+            _proxy = proxy_manager.get_proxy()
+            if _proxy:
+                ydl_opts["proxy"] = _proxy
 
             def _run() -> None:
                 with _yt_dlp.YoutubeDL(ydl_opts) as ydl:

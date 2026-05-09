@@ -283,7 +283,10 @@ async def run() -> int:
     )
     rubika.on_message(dispatcher.handle_message)
 
+    from kharej.proxy_manager import proxy_manager
+
     await rubika.start()
+    await proxy_manager.start()
     logger.info({"event": "worker.started"})
 
     stop_event = asyncio.Event()
@@ -295,6 +298,7 @@ async def run() -> int:
     logger.info({"event": "worker.stopping", "in_flight": dispatcher.in_flight})
 
     await dispatcher.shutdown(drain_timeout=60.0)
+    await proxy_manager.stop()
     await rubika.stop()
     logger.info({"event": "worker.stopped"})
     return 0

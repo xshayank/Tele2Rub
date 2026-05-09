@@ -38,6 +38,7 @@ async def download_soundcloud(
     ytdlp_bin: str,
     safe_name: str = "soundcloud_track",
     cookies_path: str | None = None,
+    proxy: str | None = None,
 ) -> Path:
     """Download a SoundCloud track via yt-dlp and return the output path."""
     output_tmpl = str(download_dir / f"{safe_name}.%(ext)s")
@@ -56,6 +57,8 @@ async def download_soundcloud(
         "--no-warnings",
     ]
     cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
+    if proxy:
+        cmd += ["--proxy", proxy]
     cmd += ["--embed-thumbnail"]
     log.info("SoundCloud download: %s", url)
     proc = await asyncio.create_subprocess_exec(

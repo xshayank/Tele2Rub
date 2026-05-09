@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from kharej.contracts import S2ObjectRef, make_media_key
 from kharej.downloaders.common import resolve_cookies_path, safe_filename
+from kharej.proxy_manager import proxy_manager
 
 if TYPE_CHECKING:
     from kharej.dispatcher import Job
@@ -67,6 +68,7 @@ class SoundcloudDownloader:
 
         ytdlp_bin: str = settings.get("ytdlp_bin") or "yt-dlp"
         cookies_path: str | None = resolve_cookies_path(settings)
+        proxy: str | None = proxy_manager.get_proxy()
 
         with tempfile.TemporaryDirectory(prefix=f"kharej_sc_{job.job_id}_") as tmp_str:
             tmp_dir = Path(tmp_str)
@@ -78,6 +80,7 @@ class SoundcloudDownloader:
                 ytdlp_bin=ytdlp_bin,
                 safe_name=safe_name,
                 cookies_path=cookies_path,
+                proxy=proxy,
             )
 
             await progress.report_progress(job.job_id, 90, phase="uploading")

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from kharej.contracts import S2ObjectRef, make_media_key
 from kharej.downloaders.common import resolve_cookies_path, safe_filename
+from kharej.proxy_manager import proxy_manager
 
 if TYPE_CHECKING:
     from kharej.dispatcher import Job
@@ -120,6 +121,7 @@ def _build_command(
     outtmpl: str,
     quality: str,
     cookies_path: str | None,
+    proxy: str | None = None,
 ) -> list[str]:
     """Build the yt-dlp CLI command list.
 
@@ -141,6 +143,9 @@ def _build_command(
         "--ignore-no-formats-error",
     ]
     cmd += ["--cookies", "/root/newrube/RubeTunes/kharej/cookies.txt"]
+
+    if proxy:
+        cmd += ["--proxy", proxy]
 
     if _is_audio_quality(quality):
         cmd += [
@@ -228,18 +233,20 @@ class YoutubeDownloader:
         cookies_path = _resolve_cookies_path(settings)
 
         ytdlp_bin = _find_ytdlp(settings)
+        proxy = proxy_manager.get_proxy()
 
         with tempfile.TemporaryDirectory(prefix=f"kharej_yt_{job.job_id}_") as tmp_str:
             tmp_dir = Path(tmp_str)
             outtmpl = str(tmp_dir / "%(title)s.%(ext)s")
 
-            cmd = _build_command(ytdlp_bin, job.url, outtmpl, quality, cookies_path)
+            cmd = _build_command(ytdlp_bin, job.url, outtmpl, quality, cookies_path, proxy)
 
             logger.info({
                 "event": "youtube.download_start",
                 "job_id": job.job_id,
                 "quality": quality,
                 "cookies": bool(cookies_path),
+                "proxy": proxy,
             })
 
             async def _make_progress(percent: int, speed: str | None) -> None:
