@@ -144,6 +144,7 @@ python -m kharej.worker --version         # print kharej version
 python -m kharej.worker --check-config    # validate env vars (no side-effects)
 python -m kharej.worker --healthcheck     # probe Rubika + S2, exit 0 if healthy
 python -m kharej.worker --debug           # enable DEBUG logging
+python -m kharej.worker -no-proxy         # disable proxy manager on kharej
 ```
 
 ---

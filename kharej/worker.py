@@ -16,6 +16,8 @@ CLI modes
     Validate env-var config; exit 0 and print redacted summary on success.
 ``python -m kharej.worker --version``
     Print ``kharej.__version__`` and exit 0.
+``python -m kharej.worker -no-proxy``
+    Run the worker with proxy usage disabled.
 """
 
 from __future__ import annotations
@@ -121,6 +123,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--debug",
         action="store_true",
         help="Enable DEBUG logging.",
+    )
+    parser.add_argument(
+        "-no-proxy",
+        "--no-proxy",
+        action="store_true",
+        dest="no_proxy",
+        help="Disable proxy manager and force direct outbound requests.",
     )
     return parser
 
@@ -257,7 +266,7 @@ async def _cmd_healthcheck(*, timeout: float) -> int:
 # ---------------------------------------------------------------------------
 
 
-async def run() -> int:
+async def run(*, no_proxy: bool = False) -> int:
     """Async entrypoint — connects to Rubika and runs until SIGINT/SIGTERM."""
     from kharej.access_control import AccessControl
     from kharej.dispatcher import Dispatcher
@@ -285,8 +294,12 @@ async def run() -> int:
 
     from kharej.proxy_manager import proxy_manager
 
+    proxy_manager.set_enabled(not no_proxy)
     await rubika.start()
-    await proxy_manager.start()
+    if not no_proxy:
+        await proxy_manager.start()
+    else:
+        logger.info({"event": "worker.proxy_disabled"})
     logger.info({"event": "worker.started"})
 
     stop_event = asyncio.Event()
@@ -298,7 +311,8 @@ async def run() -> int:
     logger.info({"event": "worker.stopping", "in_flight": dispatcher.in_flight})
 
     await dispatcher.shutdown(drain_timeout=60.0)
-    await proxy_manager.stop()
+    if not no_proxy:
+        await proxy_manager.stop()
     await rubika.stop()
     logger.info({"event": "worker.stopped"})
     return 0
@@ -345,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Default: run the worker.
     try:
-        return asyncio.run(run())
+        return asyncio.run(run(no_proxy=args.no_proxy))
     except KeyboardInterrupt:
         return 0
     except Exception as exc:

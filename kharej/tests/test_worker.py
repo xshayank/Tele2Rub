@@ -45,6 +45,18 @@ def test_version_prints_version() -> None:
     assert kharej.__version__ in result.stdout
 
 
+def test_main_passes_no_proxy_flag(monkeypatch) -> None:
+    from kharej import worker as wmod
+
+    mock_run = AsyncMock(return_value=0)
+    monkeypatch.setattr(wmod, "run", mock_run)
+
+    result = wmod.main(["--debug", "-no-proxy"])
+
+    assert result == 0
+    mock_run.assert_awaited_once_with(no_proxy=True)
+
+
 # ---------------------------------------------------------------------------
 # 3. --check-config exits non-zero when env is missing
 # ---------------------------------------------------------------------------
@@ -198,6 +210,7 @@ async def test_run_loop_starts_and_stops_on_signal(monkeypatch) -> None:
     from kharej import rubika_client as rc
     from kharej import s2_client as sc
     from kharej import worker as wmod
+    from kharej.proxy_manager import proxy_manager
 
     class _FakeTransport:
         connected = True
@@ -216,6 +229,12 @@ async def test_run_loop_starts_and_stops_on_signal(monkeypatch) -> None:
 
     monkeypatch.setattr(rc, "_DefaultRubikaTransport", lambda session: _FakeTransport())
     monkeypatch.setattr(sc.S2Client, "head_object", lambda self, key: None)
+    proxy_start = AsyncMock()
+    proxy_stop = AsyncMock()
+    proxy_set_enabled = MagicMock()
+    monkeypatch.setattr(proxy_manager, "start", proxy_start)
+    monkeypatch.setattr(proxy_manager, "stop", proxy_stop)
+    monkeypatch.setattr(proxy_manager, "set_enabled", proxy_set_enabled)
 
     env_patch = {
         "RUBIKA_SESSION_KHAREJ": "test-session",
@@ -247,3 +266,70 @@ async def test_run_loop_starts_and_stops_on_signal(monkeypatch) -> None:
         result = await asyncio.wait_for(wmod.run(), timeout=5.0)
 
     assert result == 0
+    proxy_set_enabled.assert_called_once_with(True)
+    proxy_start.assert_awaited_once()
+    proxy_stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_loop_no_proxy_skips_proxy_lifecycle(monkeypatch) -> None:
+    from kharej import rubika_client as rc
+    from kharej import s2_client as sc
+    from kharej import worker as wmod
+    from kharej.proxy_manager import proxy_manager
+
+    class _FakeTransport:
+        connected = True
+
+        async def connect(self):
+            pass
+
+        async def disconnect(self):
+            pass
+
+        async def send_text(self, peer, text):
+            pass
+
+        def subscribe(self, cb):
+            pass
+
+    monkeypatch.setattr(rc, "_DefaultRubikaTransport", lambda session: _FakeTransport())
+    monkeypatch.setattr(sc.S2Client, "head_object", lambda self, key: None)
+    proxy_start = AsyncMock()
+    proxy_stop = AsyncMock()
+    proxy_set_enabled = MagicMock()
+    monkeypatch.setattr(proxy_manager, "start", proxy_start)
+    monkeypatch.setattr(proxy_manager, "stop", proxy_stop)
+    monkeypatch.setattr(proxy_manager, "set_enabled", proxy_set_enabled)
+
+    env_patch = {
+        "RUBIKA_SESSION_KHAREJ": "test-session",
+        "IRAN_RUBIKA_ACCOUNT_GUID": "dummy-guid",
+        "ARVAN_S2_ENDPOINT": "https://s3.example.com",
+        "ARVAN_S2_ACCESS_KEY_WRITE": "ak",
+        "ARVAN_S2_SECRET_WRITE": "sk",
+        "ARVAN_S2_BUCKET": "bucket",
+    }
+
+    original_event = asyncio.Event
+
+    class _AutoEvent:
+        def __init__(self):
+            self._event = original_event()
+
+        def set(self):
+            self._event.set()
+
+        async def wait(self):
+            asyncio.get_running_loop().call_later(0.1, self._event.set)
+            await self._event.wait()
+
+    monkeypatch.setattr(asyncio, "Event", _AutoEvent)
+
+    with patch.dict(os.environ, env_patch):
+        result = await asyncio.wait_for(wmod.run(no_proxy=True), timeout=5.0)
+
+    assert result == 0
+    proxy_set_enabled.assert_called_once_with(False)
+    proxy_start.assert_not_awaited()
+    proxy_stop.assert_not_awaited()

@@ -449,6 +449,7 @@ class ProxyManager:
     def __init__(self, sources: list[str] | None = None, cache_file: Path | None = None) -> None:
         self._sources: list[str] = sources if sources is not None else list(_FREEPROXY_SOURCES)
         self._cache_file: Path = cache_file or _PROXY_CACHE_FILE
+        self._enabled: bool = True
         self._lock = threading.Lock()
         # Pre-populate from disk so requests succeed immediately after restart.
         cached = _load_proxy_cache(self._cache_file)
@@ -468,6 +469,9 @@ class ProxyManager:
 
     async def start(self) -> None:
         """Fetch and validate the proxy list immediately, then schedule periodic refresh."""
+        if not self._enabled:
+            logger.info({"event": "proxy_manager.start_skipped", "reason": "disabled"})
+            return
         # Initial fetch in a background thread so we don't block the event loop.
         await asyncio.to_thread(self._refresh)
         # Schedule recurring refresh
@@ -498,10 +502,18 @@ class ProxyManager:
         candidates (or all available proxies when the pool is smaller).
         """
         with self._lock:
+            if not self._enabled:
+                return None
             if not self._working:
                 return None
             pool = self._working[:_TOP_PROXY_COUNT]
             return random.choice(pool)
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Enable or disable proxy usage globally for this process."""
+        with self._lock:
+            self._enabled = enabled
+        logger.info({"event": "proxy_manager.enabled", "enabled": enabled})
 
     def mark_proxy_failed(self, proxy_url: str) -> None:
         """Evict *proxy_url* from the working pool immediately.
@@ -511,6 +523,8 @@ class ProxyManager:
         If the pool becomes empty after the eviction, a background refresh is
         triggered automatically.
         """
+        if not self._enabled:
+            return
         with self._lock:
             try:
                 self._working.remove(proxy_url)
