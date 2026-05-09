@@ -1,9 +1,9 @@
 """SOCKS5 proxy manager for the Kharej VPS worker.
 
 Fetches SOCKS5 proxy lists from multiple remote URLs, validates them by
-establishing a real SOCKS5 tunnel to YouTube and confirming an HTTP response,
-then maintains a rotating pool of working proxies.  A background asyncio task
-refreshes the pool every 15 minutes automatically.
+establishing a real SOCKS5 tunnel to an HTTP endpoint and confirming an HTTP
+response, then maintains a rotating pool of working proxies.  A background
+asyncio task refreshes the pool every 15 minutes automatically.
 
 The module exposes a process-global singleton :data:`proxy_manager` that all
 downloaders should use::
@@ -21,15 +21,18 @@ Each candidate proxy is tested end-to-end:
 
 1. TCP connection to the proxy host/port.
 2. SOCKS5 no-auth greeting (RFC 1928).
-3. SOCKS5 CONNECT to ``youtube.com:80`` using a domain-name address (ATYP 0x03)
-   so the proxy must resolve and reach the real target.
+3. SOCKS5 CONNECT to ``1.1.1.1:80`` using an IPv4 address (ATYP 0x01) —
+   no DNS resolution required on the proxy side, and Cloudflare's resolver
+   is reachable from virtually every proxy location.
 4. HTTP ``HEAD / HTTP/1.0`` request sent through the established tunnel.
 5. Proxy is accepted only when the response starts with ``HTTP/``.
 
-This ensures every proxy in the pool can actually reach YouTube/media hosts
-before being used for video or music downloads.  Validation runs concurrently
-in a :class:`~concurrent.futures.ThreadPoolExecutor` so it does not block
-the asyncio event loop.
+Using ``1.1.1.1`` (Cloudflare) rather than a Google/YouTube endpoint avoids
+false negatives: YouTube aggressively blocks datacenter/proxy IP ranges, so
+a ``youtube.com`` target rejects almost every free SOCKS5 proxy even when it
+is otherwise functional for media downloads.  Validation runs concurrently in
+a :class:`~concurrent.futures.ThreadPoolExecutor` so it does not block the
+asyncio event loop.
 """
 
 from __future__ import annotations
@@ -61,9 +64,12 @@ _PROXY_LIST_URLS: list[str] = [
     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/socks5.txt",
 ]
 
-#: Target host used for end-to-end SOCKS5 + HTTP validation.
-#: Using ``youtube.com`` ensures proxies can reach the primary media platform.
-_VALIDATE_HOST_BYTES: bytes = b"youtube.com"
+#: Target used for end-to-end SOCKS5 + HTTP validation.
+#: Using Cloudflare's public resolver (1.1.1.1) via IPv4 ATYP means the proxy
+#: needs no DNS, and Cloudflare is reachable from virtually every proxy location.
+#: YouTube/Google endpoints were avoided because they aggressively block most
+#: datacenter and free-proxy IP ranges, causing valid proxies to be rejected.
+_VALIDATE_HOST: str = "1.1.1.1"
 _VALIDATE_PORT: int = 80
 
 #: Seconds before a validation attempt is considered failed.
@@ -96,14 +102,14 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
 
 
 def _socks5_check(host: str, port: int) -> bool:
-    """Return True if the proxy at *host*:*port* can reach YouTube via HTTP.
+    """Return True if the proxy at *host*:*port* can reach the validation target via HTTP.
 
     Full end-to-end validation (RFC 1928):
 
     1. TCP connect to the proxy.
     2. SOCKS5 no-auth greeting.
-    3. SOCKS5 CONNECT to ``youtube.com:80`` (domain-name ATYP so the proxy
-       must resolve and route to the real host).
+    3. SOCKS5 CONNECT to ``_VALIDATE_HOST:_VALIDATE_PORT`` using an
+       IPv4 address (ATYP 0x01) — no DNS resolution required on the proxy side.
     4. Drain the variable-length CONNECT reply.
     5. Send ``HEAD / HTTP/1.0`` and verify the response starts with ``HTTP/``.
 
@@ -119,12 +125,11 @@ def _socks5_check(host: str, port: int) -> bool:
             if len(resp) < 2 or resp[0] != 0x05 or resp[1] != 0x00:
                 return False
 
-            # Step 2 – CONNECT using domain name (ATYP=0x03)
-            target = _VALIDATE_HOST_BYTES
+            # Step 2 – CONNECT using IPv4 address (ATYP=0x01); no proxy-side DNS needed
+            target_ip = socket.inet_aton(_VALIDATE_HOST)
             request = (
-                b"\x05\x01\x00\x03"
-                + bytes([len(target)])
-                + target
+                b"\x05\x01\x00\x01"
+                + target_ip
                 + struct.pack("!H", _VALIDATE_PORT)
             )
             s.sendall(request)
@@ -148,7 +153,7 @@ def _socks5_check(host: str, port: int) -> bool:
             # Step 5 – make a real HTTP request through the tunnel
             s.sendall(
                 b"HEAD / HTTP/1.0\r\n"
-                b"Host: youtube.com\r\n"
+                b"Host: 1.1.1.1\r\n"
                 b"User-Agent: curl/7.68.0\r\n"
                 b"\r\n"
             )
