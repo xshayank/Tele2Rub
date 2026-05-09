@@ -100,6 +100,9 @@ async def _download_spotify_track_locally(
                 if dl_result.success and dl_result.file_path:
                     audio_path = Path(dl_result.file_path)
                     if audio_path.exists():
+                        # Credit the proxy for a successful download.
+                        if _proxy:
+                            proxy_manager.mark_proxy_succeeded(_proxy)
                         try:
                             from rubetunes.tagging import embed_metadata  # noqa: PLC0415
 
@@ -196,7 +199,7 @@ async def _download_spotify_track_locally(
                         "attempt": attempt,
                         "error": err_str[:200],
                     })
-                    proxy_manager.mark_proxy_failed(_proxy)  # type: ignore[arg-type]
+                    proxy_manager.mark_proxy_failed(_proxy)
                     continue
                 logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
                 return None
