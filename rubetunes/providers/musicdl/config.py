@@ -147,16 +147,19 @@ def build_init_cfg(source: str) -> dict:
     return cfg
 
 
-def build_requests_overrides() -> dict:
+def build_requests_overrides(proxy: str | None = None) -> dict:
     """Return a ``requests_overrides`` dict suitable for MusicClient.
 
     Always includes a ``timeout`` tuple ``(connect, read)`` so musicdl
     sources never hang indefinitely on unresponsive endpoints.  If
-    ``MUSICDL_PROXY`` is also set, a ``proxies`` key is included.
+    *proxy* is provided it takes precedence over the ``MUSICDL_PROXY``
+    environment variable.  Either way, a ``proxies`` key is included when
+    a proxy URL is available.
     """
+    effective_proxy = proxy or MUSICDL_PROXY
     overrides: dict = {
         "timeout": (MUSICDL_CONNECT_TIMEOUT, MUSICDL_READ_TIMEOUT),
     }
-    if MUSICDL_PROXY:
-        overrides["proxies"] = {"http": MUSICDL_PROXY, "https": MUSICDL_PROXY}
+    if effective_proxy:
+        overrides["proxies"] = {"http": effective_proxy, "https": effective_proxy}
     return overrides

@@ -159,9 +159,10 @@ class MusicdlClient:
     def __init__(
         self,
         sources: list[str] | None = None,
+        proxy: str | None = None,
     ) -> None:
         self._sources: list[str] = sources or MUSICDL_DEFAULT_SOURCES or []
-        self._proxy_overrides: dict = build_requests_overrides()
+        self._proxy_overrides: dict = build_requests_overrides(proxy=proxy)
 
     # ------------------------------------------------------------------
     # Public async API
