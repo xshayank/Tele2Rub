@@ -126,6 +126,23 @@ _AUDIO_QUALITIES: frozenset[str] = frozenset({
     "mp3", "flac", "opus", "m4a", "ogg", "vorbis", "aac", "wav", "alac",
 })
 
+#: Substring in yt-dlp output that indicates the requested format is not
+#: available for the video (often caused by a proxy IP being geo-blocked or
+#: YouTube's player API refusing to serve format URLs for flagged IPs).
+_FORMAT_NOT_AVAILABLE_MSG: str = "Requested format is not available"
+
+#: Fallback yt-dlp format selector used on the second audio attempt when the
+#: primary format is not available.
+_FALLBACK_AUDIO_FORMAT: str = "bestaudio"
+
+#: Fallback yt-dlp format selector used on the second video attempt when the
+#: primary format is not available.
+_FALLBACK_VIDEO_FORMAT: str = "bv*+ba/b"
+
+#: Progressive (single-stream) fallback used on the third video attempt when
+#: both the primary and DASH fallback formats are not available.
+_PROGRESSIVE_FALLBACK_FORMAT: str = "best"
+
 
 def _resolve_format(quality: str) -> str:
     """Map a quality hint string to a yt-dlp format selector.
@@ -202,44 +219,121 @@ def _run_ytdlp_subprocess(
     job_id: str,
     loop: asyncio.AbstractEventLoop,
     progress_coro_factory,
+    _is_audio: bool | None = None,
 ) -> None:
     """Run yt-dlp as a subprocess, parse progress lines, call progress_coro_factory.
 
-    Raises :class:`RuntimeError` if yt-dlp exits with a non-zero return code.
+    When yt-dlp exits non-zero with "Requested format is not available" (a common
+    symptom of a proxy IP being geo-blocked), the download is automatically retried
+    with a simpler fallback format:
+
+    * Video downloads get up to **three** attempts: primary format →
+      :data:`_FALLBACK_VIDEO_FORMAT` → :data:`_PROGRESSIVE_FALLBACK_FORMAT`.
+    * Audio downloads get up to **two** attempts: primary format →
+      :data:`_FALLBACK_AUDIO_FORMAT`.
+
+    *_is_audio* controls which fallback path is taken.  When ``None`` (the
+    default) it is inferred from the presence of ``--extract-audio`` in *cmd*,
+    which is always the case when the caller used :func:`_build_command` for an
+    audio quality.
+
+    Raises :class:`RuntimeError` if yt-dlp exits with a non-zero return code
+    and the failure cannot be resolved by format substitution.
     """
-    logger.debug({"event": "youtube.subprocess_cmd", "cmd": cmd})
+    is_audio: bool = ("--extract-audio" in cmd) if _is_audio is None else _is_audio
 
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    def _run_once(run_cmd: list[str]) -> tuple[int, list[str]]:
+        logger.debug({"event": "youtube.subprocess_cmd", "cmd": run_cmd})
+        process = subprocess.Popen(
+            run_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        output_lines: list[str] = []
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.rstrip()
+            if line:
+                output_lines.append(line)
+                logger.debug({"event": "youtube.ytdlp_output", "line": line})
+            m = _PERCENT_RE.search(line)
+            if m:
+                percent = min(100, int(float(m.group(1))))
+                speed_m = _SPEED_RE.search(line)
+                speed = speed_m.group(1) if speed_m else None
+                asyncio.run_coroutine_threadsafe(
+                    progress_coro_factory(percent, speed),
+                    loop,
+                )
+        process.wait()
+        return process.returncode, output_lines
 
-    output_lines: list[str] = []
-    assert process.stdout is not None
-    for line in process.stdout:
-        line = line.rstrip()
-        if line:
-            output_lines.append(line)
-            logger.debug({"event": "youtube.ytdlp_output", "line": line})
+    def _has_format_error(lines: list[str]) -> bool:
+        needle = _FORMAT_NOT_AVAILABLE_MSG.lower()
+        return any(needle in line.lower() for line in lines)
 
-        m = _PERCENT_RE.search(line)
-        if m:
-            percent = min(100, int(float(m.group(1))))
-            speed_m = _SPEED_RE.search(line)
-            speed = speed_m.group(1) if speed_m else None
-            asyncio.run_coroutine_threadsafe(
-                progress_coro_factory(percent, speed),
-                loop,
-            )
+    # --- First attempt ---
+    returncode, output_lines = _run_once(cmd)
+    if returncode == 0:
+        return
 
-    process.wait()
-    if process.returncode != 0:
+    if not _has_format_error(output_lines):
         stderr_tail = "\n".join(output_lines[-20:])
         raise RuntimeError(
-            f"yt-dlp exited with code {process.returncode}:\n{stderr_tail}"
+            f"yt-dlp exited with non-zero status {returncode}:\n{stderr_tail}"
         )
+
+    # --- Format not available: retry with a simpler fallback format ---
+    fallback_fmt = _FALLBACK_AUDIO_FORMAT if is_audio else _FALLBACK_VIDEO_FORMAT
+    retry_cmd = _replace_format_arg(cmd, fallback_fmt)
+    logger.info({
+        "event": "youtube.retry_format",
+        "job_id": job_id,
+        "fallback_format": fallback_fmt,
+    })
+    returncode, output_lines = _run_once(retry_cmd)
+    if returncode == 0:
+        return
+
+    if is_audio or not _has_format_error(output_lines):
+        stderr_tail = "\n".join(output_lines[-20:])
+        raise RuntimeError(
+            f"yt-dlp format fallback retry failed with non-zero status {returncode}:\n{stderr_tail}"
+        )
+
+    # --- Video only: last resort with a progressive (single-stream) format ---
+    prog_cmd = _replace_format_arg(retry_cmd, _PROGRESSIVE_FALLBACK_FORMAT)
+    logger.info({
+        "event": "youtube.retry_format_progressive",
+        "job_id": job_id,
+        "fallback_format": _PROGRESSIVE_FALLBACK_FORMAT,
+    })
+    returncode, output_lines = _run_once(prog_cmd)
+    if returncode == 0:
+        return
+
+    stderr_tail = "\n".join(output_lines[-20:])
+    raise RuntimeError(
+        f"yt-dlp progressive format fallback failed with non-zero status {returncode}:\n{stderr_tail}"
+    )
+
+
+def _replace_format_arg(cmd: list[str], new_format: str) -> list[str]:
+    """Return a copy of *cmd* with the ``--format`` value replaced by *new_format*.
+
+    If *cmd* does not contain a ``--format`` flag, the original list is returned
+    unchanged.  The original *cmd* list is never mutated.
+    """
+    try:
+        idx = cmd.index("--format")
+    except ValueError:
+        return cmd
+    if idx + 1 >= len(cmd):
+        return cmd
+    new_cmd = list(cmd)
+    new_cmd[idx + 1] = new_format
+    return new_cmd
 
 
 def _resolve_cookies_path(settings: "KharejSettings") -> str | None:
