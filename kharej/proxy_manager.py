@@ -211,7 +211,7 @@ class ProxyManager:
         # Initial fetch in a background thread so we don't block the event loop.
         await asyncio.to_thread(self._refresh)
         # Schedule recurring refresh
-        self._task = asyncio.get_event_loop().create_task(self._refresh_loop())
+        self._task = asyncio.create_task(self._refresh_loop())
         logger.info({"event": "proxy_manager.started", "interval_sec": _REFRESH_INTERVAL})
 
     async def stop(self) -> None:
