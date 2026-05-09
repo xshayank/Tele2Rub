@@ -105,12 +105,25 @@ _VALIDATE_TIMEOUT: float = 12.0
 _VALIDATE_WORKERS: int = 60
 
 #: URL used to verify that the proxy can reach YouTube's HTTPS endpoints.
-#: A successful response (any HTTP status) proves that the proxy supports
-#: HTTPS CONNECT tunnelling to Google/YouTube servers.
+#: A 204 response proves that the proxy supports HTTPS CONNECT tunnelling to
+#: Google/YouTube servers.
 _YOUTUBE_CHECK_URL: str = "https://www.youtube.com/generate_204"
+
+#: YouTube oEmbed endpoint for a well-known video.  A successful 200 JSON
+#: response proves that the proxy can access YouTube video content (not just
+#: the CDN edge), which is a closer proxy for whether yt-dlp will succeed.
+_YOUTUBE_OEMBED_URL: str = (
+    "https://www.youtube.com/oembed"
+    "?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ&format=json"
+)
 
 #: Timeout (seconds) for the YouTube HTTPS connectivity check.
 _YOUTUBE_CHECK_TIMEOUT: float = 10.0
+
+#: Maximum number of proxies to pick from when calling get_proxy().
+#: Keeping only the fastest N proxies in the candidate pool ensures that
+#: downloads preferentially use high-throughput proxies.
+_TOP_PROXY_COUNT: int = 50
 
 #: Seconds between automatic proxy list refreshes (15 minutes).
 _REFRESH_INTERVAL: float = 900.0
@@ -156,24 +169,22 @@ def _save_proxy_cache(proxies: list[str], path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _http_speed_check(proxy_url: str) -> bool:
-    """Return True if the HTTP proxy passes a real download speed test.
+def _http_speed_check(proxy_url: str) -> float:
+    """Return the measured download speed (bytes/sec) through *proxy_url*, or 0.0 on failure.
 
     Uses the ``requests`` library to issue an HTTP GET through *proxy_url* to
-    a public speed-test file.  The proxy is accepted only when:
+    a public speed-test file.  Returns 0.0 when:
 
-    * The response status is 200 OK.
-    * At least :data:`_SPEEDTEST_SAMPLE_BYTES` are received and the measured
-      throughput is ≥ :data:`_MIN_SPEED_BPS`.
-
-    This approach rejects proxies that are merely reachable but too slow or
-    throttled to handle media downloads.
+    * The response status is not 200 OK.
+    * Fewer than :data:`_SPEEDTEST_SAMPLE_BYTES` are received.
+    * Measured throughput is below :data:`_MIN_SPEED_BPS`.
+    * Any network or library exception occurs.
     """
     try:
         import requests  # noqa: PLC0415  (lazy import keeps startup cost low)
     except ImportError:
         logger.error({"event": "proxy_manager.requests_missing"})
-        return False
+        return 0.0
 
     proxies = {"http": proxy_url, "https": proxy_url}
     try:
@@ -184,7 +195,7 @@ def _http_speed_check(proxy_url: str) -> bool:
             timeout=_VALIDATE_TIMEOUT,
         ) as resp:
             if resp.status_code != 200:
-                return False
+                return 0.0
 
             downloaded = 0
             start = time.perf_counter()
@@ -194,27 +205,37 @@ def _http_speed_check(proxy_url: str) -> bool:
                     break
 
             elapsed = time.perf_counter() - start
+            if downloaded < _SPEEDTEST_SAMPLE_BYTES:
+                return 0.0
             if elapsed < 0.01:
-                # Nearly instant response — only accept if the full sample
-                # arrived, so a single-byte reply can't sneak through.
-                return downloaded >= _SPEEDTEST_SAMPLE_BYTES
-            return downloaded / elapsed >= _MIN_SPEED_BPS
+                # Nearly instant — treat as max speed but require full sample.
+                return float(_MIN_SPEED_BPS * 10)
+            speed = downloaded / elapsed
+            return speed if speed >= _MIN_SPEED_BPS else 0.0
 
     except Exception:
-        return False
+        return 0.0
 
 
 def _http_youtube_check(proxy_url: str) -> bool:
-    """Return True if the proxy can reach YouTube's HTTPS endpoint.
+    """Return True if the proxy can both reach YouTube and serve video content.
 
-    Sends a GET request to :data:`_YOUTUBE_CHECK_URL` (a YouTube no-content
-    endpoint) through *proxy_url*.  Any HTTP response — including redirects
-    and 4xx status codes — is treated as success because it proves that the
-    proxy can establish an HTTPS CONNECT tunnel to Google/YouTube servers.
+    Two checks are performed, both must pass:
 
-    This catches a large class of proxies that pass the plain-HTTP speed test
-    but cannot proxy HTTPS traffic (the most common cause of yt-dlp
-    ``ConnectTimeoutError`` / "Unable to connect to proxy" failures).
+    1. **Connectivity** — GET :data:`_YOUTUBE_CHECK_URL` (``generate_204``).
+       The response **must** be 204 No Content.  Any other status (including
+       5xx from a mis-configured proxy) means the proxy does not correctly
+       forward YouTube HTTPS traffic.
+
+    2. **Content** — GET :data:`_YOUTUBE_OEMBED_URL` (the oEmbed endpoint for
+       a well-known video).  A 200 JSON response proves that the proxy can
+       fetch YouTube video metadata — a much closer signal for yt-dlp success
+       than a bare connectivity check.
+
+    Requiring both filters eliminates proxies whose IPs are flagged or
+    geo-blocked by YouTube (which would still respond to ``generate_204`` but
+    refuse to serve video content, causing the "No video formats found!" error
+    in yt-dlp).
     """
     try:
         import requests  # noqa: PLC0415
@@ -222,33 +243,57 @@ def _http_youtube_check(proxy_url: str) -> bool:
         return True  # If requests is missing, skip the check rather than blocking all proxies
 
     proxies = {"http": proxy_url, "https": proxy_url}
+
+    # --- Check 1: generate_204 must return exactly 204 ---
     try:
-        requests.get(
+        resp = requests.get(
             _YOUTUBE_CHECK_URL,
             proxies=proxies,
             timeout=_YOUTUBE_CHECK_TIMEOUT,
             allow_redirects=False,
             stream=False,
         )
-        # Any HTTP response means the proxy forwarded the request successfully.
-        return True
+        if resp.status_code != 204:
+            return False
     except Exception:
         return False
 
+    # --- Check 2: oEmbed endpoint must return 200 with valid JSON ---
+    try:
+        resp = requests.get(
+            _YOUTUBE_OEMBED_URL,
+            proxies=proxies,
+            timeout=_YOUTUBE_CHECK_TIMEOUT,
+            allow_redirects=True,
+            stream=False,
+        )
+        if resp.status_code != 200:
+            return False
+        data = resp.json()
+        # A valid oEmbed response always has a "title" field.
+        if not isinstance(data, dict) or "title" not in data:
+            return False
+    except Exception:
+        return False
 
-def _validate_single_proxy(proxy_url: str) -> bool:
-    """Return True only if *proxy_url* passes both the speed test and the YouTube check.
+    return True
+
+
+def _validate_single_proxy(proxy_url: str) -> float:
+    """Return the measured speed (bytes/sec) for *proxy_url*, or 0.0 if it fails.
 
     Both checks must succeed:
 
     * :func:`_http_speed_check` — adequate download throughput via plain HTTP.
-    * :func:`_http_youtube_check` — can establish an HTTPS tunnel to YouTube.
+      Returns the measured speed so callers can rank proxies.
+    * :func:`_http_youtube_check` — can reach YouTube and fetch video content.
 
-    Requiring both filters eliminates proxies that are fast enough but cannot
-    proxy HTTPS traffic, which is the primary source of real-world yt-dlp
-    proxy failures.
+    Returning 0.0 indicates the proxy should be discarded.
     """
-    return _http_speed_check(proxy_url) and _http_youtube_check(proxy_url)
+    speed = _http_speed_check(proxy_url)
+    if speed <= 0.0:
+        return 0.0
+    return speed if _http_youtube_check(proxy_url) else 0.0
 
 
 def _fetch_proxies_from_source(source: str) -> list[str]:
@@ -314,14 +359,22 @@ def _fetch_proxies_from_source(source: str) -> list[str]:
 
 
 def _fetch_all_proxy_lists(sources: list[str]) -> list[str]:
-    """Scrape and deduplicate HTTP proxies from all pyfreeproxy *sources*."""
+    """Scrape and deduplicate HTTP proxies from all pyfreeproxy *sources* in parallel."""
     seen: set[str] = set()
     combined: list[str] = []
-    for source in sources:
-        for proxy in _fetch_proxies_from_source(source):
-            if proxy not in seen:
-                seen.add(proxy)
-                combined.append(proxy)
+    lock = threading.Lock()
+
+    def _fetch_and_collect(source: str) -> None:
+        proxies = _fetch_proxies_from_source(source)
+        with lock:
+            for proxy in proxies:
+                if proxy not in seen:
+                    seen.add(proxy)
+                    combined.append(proxy)
+
+    with ThreadPoolExecutor(max_workers=len(sources)) as executor:
+        list(executor.map(_fetch_and_collect, sources))
+
     logger.info(
         {
             "event": "proxy_manager.fetch_all_done",
@@ -333,29 +386,39 @@ def _fetch_all_proxy_lists(sources: list[str]) -> list[str]:
 
 
 def _validate_proxies(proxy_urls: Sequence[str]) -> list[str]:
-    """Return only the *proxy_urls* that pass the speed test."""
+    """Return valid *proxy_urls* sorted by descending download speed.
+
+    Proxies are validated concurrently and the resulting list is ordered
+    fastest-first so that :meth:`ProxyManager.get_proxy` can preferentially
+    select high-throughput proxies.
+    """
     if not proxy_urls:
         return []
 
-    results: list[str] = []
+    results: list[tuple[str, float]] = []
     lock = threading.Lock()
 
     def _check(proxy_url: str) -> None:
-        if _validate_single_proxy(proxy_url):
+        speed = _validate_single_proxy(proxy_url)
+        if speed > 0.0:
             with lock:
-                results.append(proxy_url)
+                results.append((proxy_url, speed))
 
     with ThreadPoolExecutor(max_workers=_VALIDATE_WORKERS) as executor:
         list(executor.map(_check, proxy_urls))
+
+    # Sort fastest-first so that get_proxy() picks from the best candidates.
+    results.sort(key=lambda t: t[1], reverse=True)
+    working = [url for url, _ in results]
 
     logger.info(
         {
             "event": "proxy_manager.validation_done",
             "total": len(proxy_urls),
-            "working": len(results),
+            "working": len(working),
         }
     )
-    return results
+    return working
 
 
 # ---------------------------------------------------------------------------
@@ -417,11 +480,18 @@ class ProxyManager:
     # ------------------------------------------------------------------
 
     def get_proxy(self) -> str | None:
-        """Return a random working ``http://host:port`` proxy URL, or ``None``."""
+        """Return a random working ``http://host:port`` proxy URL, or ``None``.
+
+        Proxies are stored sorted fastest-first (by the speed measured during
+        validation).  To strike a balance between throughput and distribution,
+        a random proxy is chosen from the fastest :data:`_TOP_PROXY_COUNT`
+        candidates (or all available proxies when the pool is smaller).
+        """
         with self._lock:
             if not self._working:
                 return None
-            return random.choice(self._working)
+            pool = self._working[:_TOP_PROXY_COUNT]
+            return random.choice(pool)
 
     def mark_proxy_failed(self, proxy_url: str) -> None:
         """Evict *proxy_url* from the working pool immediately.
