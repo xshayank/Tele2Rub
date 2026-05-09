@@ -18,6 +18,19 @@ downloaders should use::
     await proxy_manager.start()                 # begin background refresh
     await proxy_manager.stop()                  # cancel background refresh
 
+Primary proxy
+-------------
+Set the ``KHAREJ_PRIMARY_PROXY`` environment variable to an ``http://host:port``
+URL to make the manager always prefer that proxy over the scraped pool::
+
+    KHAREJ_PRIMARY_PROXY=http://1.2.3.4:8080
+
+When a primary proxy is configured :meth:`ProxyManager.get_proxy` always
+returns it — the scanned pool is only used as a fallback when the primary
+proxy has been marked as failed via :meth:`ProxyManager.mark_proxy_failed`.
+The failed flag is automatically cleared at the start of every refresh cycle
+(every 15 minutes) so the primary proxy is retried after a temporary outage.
+
 Proxy sourcing
 --------------
 Candidates are scraped from several well-maintained free-proxy sources using
@@ -446,10 +459,26 @@ class ProxyManager:
     have a non-empty pool even before the first background refresh completes.
     """
 
-    def __init__(self, sources: list[str] | None = None, cache_file: Path | None = None) -> None:
+    def __init__(
+        self,
+        sources: list[str] | None = None,
+        cache_file: Path | None = None,
+        primary_proxy: str | None = None,
+    ) -> None:
         self._sources: list[str] = sources if sources is not None else list(_FREEPROXY_SOURCES)
         self._cache_file: Path = cache_file or _PROXY_CACHE_FILE
         self._lock = threading.Lock()
+        # Primary proxy: always preferred over the scanned pool when set.
+        self._primary_proxy: str | None = primary_proxy or os.environ.get("KHAREJ_PRIMARY_PROXY")
+        # Tracks whether the primary proxy has been marked as failed for the current cycle.
+        self._primary_proxy_failed: bool = False
+        if self._primary_proxy:
+            logger.info(
+                {
+                    "event": "proxy_manager.primary_proxy_set",
+                    "proxy": self._primary_proxy,
+                }
+            )
         # Pre-populate from disk so requests succeed immediately after restart.
         cached = _load_proxy_cache(self._cache_file)
         self._working: list[str] = cached
@@ -490,14 +519,22 @@ class ProxyManager:
     # ------------------------------------------------------------------
 
     def get_proxy(self) -> str | None:
-        """Return a random working ``http://host:port`` proxy URL, or ``None``.
+        """Return a working ``http://host:port`` proxy URL, or ``None``.
 
-        Proxies are stored sorted fastest-first (by the speed measured during
-        validation).  To strike a balance between throughput and distribution,
-        a random proxy is chosen from the fastest :data:`_TOP_PROXY_COUNT`
-        candidates (or all available proxies when the pool is smaller).
+        When a primary proxy is configured via ``KHAREJ_PRIMARY_PROXY`` it is
+        always returned first — the scanned pool is only used as a fallback
+        when the primary proxy has been marked failed via
+        :meth:`mark_proxy_failed`.
+
+        Otherwise proxies are stored sorted fastest-first (by the speed
+        measured during validation).  To strike a balance between throughput
+        and distribution, a random proxy is chosen from the fastest
+        :data:`_TOP_PROXY_COUNT` candidates (or all available proxies when the
+        pool is smaller).
         """
         with self._lock:
+            if self._primary_proxy and not self._primary_proxy_failed:
+                return self._primary_proxy
             if not self._working:
                 return None
             pool = self._working[:_TOP_PROXY_COUNT]
@@ -510,8 +547,24 @@ class ProxyManager:
         subsequent requests from other jobs do not reuse the broken proxy.
         If the pool becomes empty after the eviction, a background refresh is
         triggered automatically.
+
+        When *proxy_url* is the configured primary proxy it is not evicted from
+        the pool (it is not part of the scanned pool to begin with); instead a
+        flag is set so that :meth:`get_proxy` falls back to the scanned pool
+        until the next refresh cycle resets the flag.
         """
         with self._lock:
+            if self._primary_proxy and proxy_url == self._primary_proxy:
+                self._primary_proxy_failed = True
+                logger.warning(
+                    {
+                        "event": "proxy_manager.primary_proxy_failed",
+                        "proxy": proxy_url,
+                        "msg": "Primary proxy marked as failed; falling back to scanned pool until next refresh",
+                    }
+                )
+                return
+
             try:
                 self._working.remove(proxy_url)
             except ValueError:
@@ -546,7 +599,23 @@ class ProxyManager:
     # ------------------------------------------------------------------
 
     def _refresh(self) -> None:
-        """Synchronously fetch and validate the proxy list, then update the pool."""
+        """Synchronously fetch and validate the proxy list, then update the pool.
+
+        Also resets the primary-proxy failed flag so that a previously failing
+        primary proxy is retried after each refresh cycle.
+        """
+        # Reset the primary proxy failed flag so it gets retried after the refresh.
+        with self._lock:
+            if self._primary_proxy_failed:
+                logger.info(
+                    {
+                        "event": "proxy_manager.primary_proxy_reset",
+                        "proxy": self._primary_proxy,
+                        "msg": "Primary proxy failure flag cleared; will retry primary proxy",
+                    }
+                )
+                self._primary_proxy_failed = False
+
         logger.info({"event": "proxy_manager.refresh_start", "sources": self._sources})
         candidates = _fetch_all_proxy_lists(self._sources)
         if not candidates:
