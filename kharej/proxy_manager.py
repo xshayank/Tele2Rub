@@ -1,51 +1,60 @@
-"""SOCKS5 proxy manager for the Kharej VPS worker.
+"""HTTP proxy manager for the Kharej VPS worker.
 
-Fetches SOCKS5 proxy lists from multiple remote URLs, validates them by
-establishing a real SOCKS5 tunnel to an HTTP endpoint and confirming an HTTP
-response, then maintains a rotating pool of working proxies.  A background
-asyncio task refreshes the pool every 15 minutes automatically.
+Fetches HTTP proxy lists from multiple remote URLs, validates them by
+measuring actual download throughput through each proxy, then maintains a
+rotating pool of working proxies.  A background asyncio task refreshes the
+pool every 15 minutes automatically.  Validated proxies are persisted to disk
+so the pool is available immediately after a process restart without waiting
+for the first full refresh cycle.
 
 The module exposes a process-global singleton :data:`proxy_manager` that all
 downloaders should use::
 
     from kharej.proxy_manager import proxy_manager
 
-    proxy_url = proxy_manager.get_proxy()       # "socks5://ip:port" or None
+    proxy_url = proxy_manager.get_proxy()       # "http://ip:port" or None
     proxy_manager.mark_proxy_failed(proxy_url)  # evict a bad proxy immediately
     await proxy_manager.start()                 # begin background refresh
     await proxy_manager.stop()                  # cancel background refresh
 
 Proxy validation
 ----------------
-Each candidate proxy is tested end-to-end:
+Each candidate proxy is tested with a real download speed check:
 
-1. TCP connection to the proxy host/port.
-2. SOCKS5 no-auth greeting (RFC 1928).
-3. SOCKS5 CONNECT to ``1.1.1.1:80`` using an IPv4 address (ATYP 0x01) —
-   no DNS resolution required on the proxy side, and Cloudflare's resolver
-   is reachable from virtually every proxy location.
-4. HTTP ``HEAD / HTTP/1.0`` request sent through the established tunnel.
-5. Proxy is accepted only when the response starts with ``HTTP/``.
+1. HTTP GET request for a 5 MB file through the proxy using the ``requests``
+   library (timeout :data:`_VALIDATE_TIMEOUT`).
+2. Verify the response status is 200 OK.
+3. Download :data:`_SPEEDTEST_SAMPLE_BYTES` bytes and measure throughput.
+4. Proxy is accepted only when throughput ≥ :data:`_MIN_SPEED_BPS`.
 
-Using ``1.1.1.1`` (Cloudflare) rather than a Google/YouTube endpoint avoids
-false negatives: YouTube aggressively blocks datacenter/proxy IP ranges, so
-a ``youtube.com`` target rejects almost every free SOCKS5 proxy even when it
-is otherwise functional for media downloads.  Validation runs concurrently in
-a :class:`~concurrent.futures.ThreadPoolExecutor` so it does not block the
+Measuring actual throughput rather than just connectivity filters out proxies
+that accept connections but are too slow or throttled to be useful for media
+downloads.  Validation runs concurrently in a
+:class:`~concurrent.futures.ThreadPoolExecutor` so it does not block the
 asyncio event loop.
+
+Disk cache
+----------
+After every successful refresh the validated proxy list is written atomically
+to :data:`_PROXY_CACHE_FILE` (``kharej/state/proxies.json``).  On startup the
+cache is loaded immediately so requests do not fail while the first background
+refresh is still in progress.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import random
-import socket
-import struct
+import tempfile
 import threading
+import time
 import urllib.request
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 logger = logging.getLogger("kharej.proxy_manager")
 
@@ -53,27 +62,32 @@ logger = logging.getLogger("kharej.proxy_manager")
 # Constants
 # ---------------------------------------------------------------------------
 
-#: Remote URLs that each contain one ``ip:port`` SOCKS5 proxy entry per line.
+#: Remote URLs that provide HTTP proxy lists, one entry per line.
+#: Supported formats: ``host:port`` and ``http://host:port``.
 #: All lists are fetched and merged before validation so the pool is as large
 #: as possible.
 _PROXY_LIST_URLS: list[str] = [
     (
         "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main"
-        "/proxies/protocols/socks5/data.txt"
+        "/proxies/protocols/http/data.txt"
     ),
-    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/socks5.txt",
+    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",  # repo name is misleading; file contains HTTP proxies
 ]
 
-#: Target used for end-to-end SOCKS5 + HTTP validation.
-#: Using Cloudflare's public resolver (1.1.1.1) via IPv4 ATYP means the proxy
-#: needs no DNS, and Cloudflare is reachable from virtually every proxy location.
-#: YouTube/Google endpoints were avoided because they aggressively block most
-#: datacenter and free-proxy IP ranges, causing valid proxies to be rejected.
-_VALIDATE_HOST: str = "1.1.1.1"
-_VALIDATE_PORT: int = 80
+#: Public HTTP speed-test server used for proxy validation.  Using a numeric
+#: IPv4 address avoids any DNS lookup through the proxy under test.
+_SPEEDTEST_URL: str = "http://212.183.159.230/5MB.zip"
+
+#: Number of bytes to download when measuring proxy speed.  30 KB is enough
+#: to gauge throughput without wasting bandwidth on slow proxies.
+_SPEEDTEST_SAMPLE_BYTES: int = 30 * 1024  # 30 KB
+
+#: Minimum acceptable download speed through a proxy (bytes/sec).
+#: Proxies slower than this are rejected as unsuitable for media downloads.
+_MIN_SPEED_BPS: float = 30 * 1024  # 30 KB/s
 
 #: Seconds before a validation attempt is considered failed.
-_VALIDATE_TIMEOUT: float = 10.0
+_VALIDATE_TIMEOUT: float = 15.0
 
 #: How many proxies to validate concurrently.
 _VALIDATE_WORKERS: int = 50
@@ -84,91 +98,105 @@ _REFRESH_INTERVAL: float = 900.0
 #: HTTP request timeout when fetching the remote proxy list (seconds).
 _FETCH_TIMEOUT: float = 20.0
 
+#: Path to the disk cache that persists validated proxies across restarts.
+_PROXY_CACHE_FILE: Path = Path(__file__).parent / "state" / "proxies.json"
+
+
+# ---------------------------------------------------------------------------
+# Disk cache helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_proxy_cache(path: Path) -> list[str]:
+    """Load the saved proxy list from *path*; return an empty list on any error."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return [p for p in data if isinstance(p, str)]
+    except Exception:
+        pass
+    return []
+
+
+def _save_proxy_cache(proxies: list[str], path: Path) -> None:
+    """Atomically write *proxies* to *path* as a JSON array."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".proxies_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(proxies, f)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
 
 # ---------------------------------------------------------------------------
 # Proxy validation helpers
 # ---------------------------------------------------------------------------
 
 
-def _recv_exact(sock: socket.socket, n: int) -> bytes:
-    """Read exactly *n* bytes from *sock*, returning fewer only on EOF."""
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            break
-        buf += chunk
-    return buf
+def _http_speed_check(proxy_url: str) -> bool:
+    """Return True if the HTTP proxy passes a real download speed test.
 
+    Uses the ``requests`` library to issue an HTTP GET through *proxy_url* to
+    a public speed-test file.  The proxy is accepted only when:
 
-def _socks5_check(host: str, port: int) -> bool:
-    """Return True if the proxy at *host*:*port* can reach the validation target via HTTP.
+    * The response status is 200 OK.
+    * At least :data:`_SPEEDTEST_SAMPLE_BYTES` are received and the measured
+      throughput is ≥ :data:`_MIN_SPEED_BPS`.
 
-    Full end-to-end validation (RFC 1928):
-
-    1. TCP connect to the proxy.
-    2. SOCKS5 no-auth greeting.
-    3. SOCKS5 CONNECT to ``_VALIDATE_HOST:_VALIDATE_PORT`` using an
-       IPv4 address (ATYP 0x01) — no DNS resolution required on the proxy side.
-    4. Drain the variable-length CONNECT reply.
-    5. Send ``HEAD / HTTP/1.0`` and verify the response starts with ``HTTP/``.
-
-    Only proxies that pass all five steps are kept in the working pool.
+    This approach rejects proxies that are merely reachable but too slow or
+    throttled to handle media downloads.
     """
     try:
-        with socket.create_connection((host, port), timeout=_VALIDATE_TIMEOUT) as s:
-            s.settimeout(_VALIDATE_TIMEOUT)
+        import requests  # noqa: PLC0415  (lazy import keeps startup cost low)
+    except ImportError:
+        logger.error({"event": "proxy_manager.requests_missing"})
+        return False
 
-            # Step 1 – greeting: no-auth only
-            s.sendall(b"\x05\x01\x00")
-            resp = _recv_exact(s, 2)
-            if len(resp) < 2 or resp[0] != 0x05 or resp[1] != 0x00:
+    proxies = {"http": proxy_url, "https": proxy_url}
+    try:
+        with requests.get(
+            _SPEEDTEST_URL,
+            stream=True,
+            proxies=proxies,
+            timeout=_VALIDATE_TIMEOUT,
+        ) as resp:
+            if resp.status_code != 200:
                 return False
 
-            # Step 2 – CONNECT using IPv4 address (ATYP=0x01); no proxy-side DNS needed
-            target_ip = socket.inet_aton(_VALIDATE_HOST)
-            request = (
-                b"\x05\x01\x00\x01"
-                + target_ip
-                + struct.pack("!H", _VALIDATE_PORT)
-            )
-            s.sendall(request)
+            downloaded = 0
+            start = time.perf_counter()
+            for chunk in resp.iter_content(chunk_size=8192):
+                downloaded += len(chunk)
+                if downloaded >= _SPEEDTEST_SAMPLE_BYTES:
+                    break
 
-            # Step 3 – read CONNECT reply header (4 bytes: VER, REP, RSV, ATYP)
-            reply_hdr = _recv_exact(s, 4)
-            if len(reply_hdr) < 4 or reply_hdr[1] != 0x00:
-                return False
+            elapsed = time.perf_counter() - start
+            if elapsed < 0.01:
+                # Nearly instant response — only accept if the full sample
+                # arrived, so a single-byte reply can't sneak through.
+                return downloaded >= _SPEEDTEST_SAMPLE_BYTES
+            return downloaded / elapsed >= _MIN_SPEED_BPS
 
-            # Step 4 – drain the bound address so the socket is ready for data
-            atyp = reply_hdr[3]
-            if atyp == 0x01:       # IPv4: 4 bytes addr + 2 bytes port
-                _recv_exact(s, 6)
-            elif atyp == 0x03:     # domain: 1 byte len + N bytes + 2 bytes port
-                dlen_buf = _recv_exact(s, 1)
-                if dlen_buf:
-                    _recv_exact(s, dlen_buf[0] + 2)
-            elif atyp == 0x04:     # IPv6: 16 bytes addr + 2 bytes port
-                _recv_exact(s, 18)
-
-            # Step 5 – make a real HTTP request through the tunnel
-            s.sendall(
-                b"HEAD / HTTP/1.0\r\n"
-                b"Host: 1.1.1.1\r\n"
-                b"User-Agent: curl/7.68.0\r\n"
-                b"\r\n"
-            )
-            http_resp = s.recv(16)
-            return http_resp.startswith(b"HTTP/")
     except Exception:
         return False
 
 
 def _parse_proxy_line(line: str) -> str | None:
-    """Parse a proxy list line into a ``socks5://host:port`` URL or ``None``."""
+    """Parse a proxy list line into an ``http://host:port`` URL or ``None``.
+
+    Accepts both plain ``host:port`` entries and lines that already carry an
+    ``http://`` (or any other ``scheme://``) prefix.
+    """
     line = line.strip()
     if not line or line.startswith("#"):
         return None
-    # Strip protocol prefix if present (e.g. "socks5://")
+    # Strip any existing scheme prefix (e.g. "http://", "socks5://")
     if "://" in line:
         line = line.split("://", 1)[1]
     parts = line.rsplit(":", 1)
@@ -182,11 +210,11 @@ def _parse_proxy_line(line: str) -> str | None:
     port = int(port_str)
     if not (1 <= port <= 65535):
         return None
-    return f"socks5://{host}:{port}"
+    return f"http://{host}:{port}"
 
 
 def _fetch_proxy_list(url: str) -> list[str]:
-    """Fetch raw proxy list text from *url* and return parsed ``socks5://`` URLs."""
+    """Fetch raw proxy list text from *url* and return parsed ``http://`` URLs."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "RubeTunes-ProxyManager/1.0"})
         with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
@@ -237,7 +265,7 @@ def _fetch_all_proxy_lists(urls: list[str]) -> list[str]:
 
 
 def _validate_proxies(proxy_urls: Sequence[str]) -> list[str]:
-    """Return only the *proxy_urls* that pass :func:`_socks5_check`."""
+    """Return only the *proxy_urls* that pass the speed test."""
     if not proxy_urls:
         return []
 
@@ -245,11 +273,7 @@ def _validate_proxies(proxy_urls: Sequence[str]) -> list[str]:
     lock = threading.Lock()
 
     def _check(proxy_url: str) -> None:
-        # proxy_url is "socks5://host:port"
-        addr = proxy_url.split("://", 1)[1]
-        host, port_str = addr.rsplit(":", 1)
-        port = int(port_str)
-        if _socks5_check(host, port):
+        if _http_speed_check(proxy_url):
             with lock:
                 results.append(proxy_url)
 
@@ -272,16 +296,29 @@ def _validate_proxies(proxy_urls: Sequence[str]) -> list[str]:
 
 
 class ProxyManager:
-    """Manage a pool of validated SOCKS5 proxies with periodic auto-refresh.
+    """Manage a pool of validated HTTP proxies with periodic auto-refresh.
 
     The manager is safe to use from multiple threads (downloaders call
     :meth:`get_proxy` from ``asyncio.to_thread`` workers).
+
+    On instantiation the disk cache is loaded immediately so callers always
+    have a non-empty pool even before the first background refresh completes.
     """
 
-    def __init__(self, urls: list[str] | None = None) -> None:
+    def __init__(self, urls: list[str] | None = None, cache_file: Path | None = None) -> None:
         self._urls: list[str] = urls if urls is not None else list(_PROXY_LIST_URLS)
+        self._cache_file: Path = cache_file or _PROXY_CACHE_FILE
         self._lock = threading.Lock()
-        self._working: list[str] = []
+        # Pre-populate from disk so requests succeed immediately after restart.
+        cached = _load_proxy_cache(self._cache_file)
+        self._working: list[str] = cached
+        if cached:
+            logger.info(
+                {
+                    "event": "proxy_manager.cache_loaded",
+                    "count": len(cached),
+                }
+            )
         self._task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
@@ -312,7 +349,7 @@ class ProxyManager:
     # ------------------------------------------------------------------
 
     def get_proxy(self) -> str | None:
-        """Return a random working ``socks5://host:port`` proxy URL, or ``None``."""
+        """Return a random working ``http://host:port`` proxy URL, or ``None``."""
         with self._lock:
             if not self._working:
                 return None
@@ -375,6 +412,16 @@ class ProxyManager:
         working = _validate_proxies(candidates)
         with self._lock:
             self._working = working
+        # Persist to disk so the pool survives a process restart.
+        try:
+            _save_proxy_cache(working, self._cache_file)
+        except Exception as exc:
+            logger.warning(
+                {
+                    "event": "proxy_manager.cache_save_error",
+                    "error": repr(exc),
+                }
+            )
         logger.info(
             {
                 "event": "proxy_manager.refresh_done",
