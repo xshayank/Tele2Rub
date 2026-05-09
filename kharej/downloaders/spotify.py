@@ -174,6 +174,9 @@ async def _download_spotify_track_locally(
                     None,
                 )
                 if audio_path is not None:
+                    # Credit the proxy for a successful download.
+                    if _proxy:
+                        proxy_manager.mark_proxy_succeeded(_proxy)
                     try:
                         from rubetunes.tagging import embed_metadata  # noqa: PLC0415
 

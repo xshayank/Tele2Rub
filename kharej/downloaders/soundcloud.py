@@ -134,6 +134,10 @@ class SoundcloudDownloader:
                             continue
                     raise
 
+                # Download succeeded — credit the proxy before uploading.
+                if proxy:
+                    proxy_manager.mark_proxy_succeeded(proxy)
+
                 await progress.report_progress(job.job_id, 90, phase="uploading")
 
                 ext = audio_path.suffix.lstrip(".")
