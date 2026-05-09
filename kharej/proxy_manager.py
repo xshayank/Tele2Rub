@@ -273,7 +273,13 @@ def _fetch_proxies_from_source(source: str) -> list[str]:
         return []
 
     try:
-        sess = BuildProxiedSession({"type": source, "max_pages": 1, "disable_print": True})
+        sess = BuildProxiedSession(
+            {
+                "type": source,
+                "max_pages": 1,
+                "disable_print": True,
+            }  # disable_print is a standard pyfreeproxy param
+        )
         proxy_infos = sess.refreshproxies()
     except Exception as exc:
         logger.warning(
