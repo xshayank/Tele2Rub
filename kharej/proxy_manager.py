@@ -71,7 +71,7 @@ _PROXY_LIST_URLS: list[str] = [
         "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main"
         "/proxies/protocols/http/data.txt"
     ),
-    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
+    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",  # repo name is misleading; file contains HTTP proxies
 ]
 
 #: Public HTTP speed-test server used for proxy validation.  Using a numeric
@@ -178,7 +178,9 @@ def _http_speed_check(proxy_url: str) -> bool:
 
             elapsed = time.perf_counter() - start
             if elapsed < 0.01:
-                return downloaded > 0
+                # Nearly instant response — only accept if the full sample
+                # arrived, so a single-byte reply can't sneak through.
+                return downloaded >= _SPEEDTEST_SAMPLE_BYTES
             return downloaded / elapsed >= _MIN_SPEED_BPS
 
     except Exception:
