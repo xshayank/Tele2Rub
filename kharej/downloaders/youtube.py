@@ -47,6 +47,10 @@ _MAX_PROXY_RETRIES: int = 5
 
 #: Substrings in a yt-dlp error message that indicate a proxy/network failure
 #: (as opposed to an unavailable video or auth error).
+#:
+#: "no video formats found" is included because YouTube returns this when a
+#: proxy IP is flagged/geo-blocked and the player API refuses to serve format
+#: URLs — it is not an inherent problem with the video itself.
 _PROXY_ERROR_KEYWORDS: tuple[str, ...] = (
     "proxy",
     "socks",
@@ -62,6 +66,10 @@ _PROXY_ERROR_KEYWORDS: tuple[str, ...] = (
     "remotedisconnected",
     "connection reset",
     "errno",
+    # YouTube-specific proxy-block indicators
+    "no video formats found",
+    "this video is not available",
+    "sign in to confirm",
 )
 
 
