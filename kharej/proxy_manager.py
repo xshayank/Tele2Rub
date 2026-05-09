@@ -3,10 +3,10 @@
 Fetches HTTP proxy lists from multiple sources via :pypi:`pyfreeproxy`
 (CharlesPikachu/freeproxy), validates them by measuring actual download
 throughput through each proxy, then maintains a rotating pool of working
-proxies.  A background asyncio task refreshes the pool every 15 minutes
-automatically.  Validated proxies are persisted to disk so the pool is
-available immediately after a process restart without waiting for the first
-full refresh cycle.
+proxies.  A background asyncio task evicts expired proxies every minute and
+performs a full refresh every 15 minutes automatically.  Validated proxies are
+persisted to disk so the pool is available immediately after a process restart
+without waiting for the first full refresh cycle.
 
 The module exposes a process-global singleton :data:`proxy_manager` that all
 downloaders should use::
@@ -44,6 +44,14 @@ that yt-dlp proxy failures are minimised.
 Validation runs concurrently in a
 :class:`~concurrent.futures.ThreadPoolExecutor` so it does not block the
 asyncio event loop.
+
+Proxy lifetime (TTL)
+--------------------
+Every validated proxy is stamped with the time it was found.  Proxies older
+than :data:`_PROXY_TTL_SECONDS` (20 minutes) are automatically evicted from
+the working pool.  The background loop checks for expired proxies every
+:data:`_EXPIRY_CHECK_INTERVAL` seconds (1 minute) and triggers an immediate
+full refresh when the pool becomes empty due to expiry.
 
 Disk cache
 ----------
@@ -137,6 +145,14 @@ _INSTANT_RESPONSE_SPEED_MULTIPLIER: float = 10.0
 
 #: Seconds between automatic proxy list refreshes (15 minutes).
 _REFRESH_INTERVAL: float = 900.0
+
+#: Seconds a validated proxy remains in the working pool before it expires.
+#: After this lifetime the proxy is evicted; the pool is replenished on the
+#: next scheduled refresh (or immediately when the pool becomes empty).
+_PROXY_TTL_SECONDS: float = 20 * 60  # 20 minutes
+
+#: How often the background loop checks for and evicts expired proxies.
+_EXPIRY_CHECK_INTERVAL: float = 60.0  # every minute
 
 #: Path to the disk cache that persists validated proxies across restarts.
 _PROXY_CACHE_FILE: Path = Path(__file__).parent / "state" / "proxies.json"
@@ -450,9 +466,14 @@ class ProxyManager:
         self._sources: list[str] = sources if sources is not None else list(_FREEPROXY_SOURCES)
         self._cache_file: Path = cache_file or _PROXY_CACHE_FILE
         self._lock = threading.Lock()
+        # Per-proxy validation timestamps.  Proxies older than _PROXY_TTL_SECONDS are evicted.
+        self._proxy_timestamps: dict[str, float] = {}
         # Pre-populate from disk so requests succeed immediately after restart.
         cached = _load_proxy_cache(self._cache_file)
+        now = time.time()
         self._working: list[str] = cached
+        for proxy in cached:
+            self._proxy_timestamps[proxy] = now
         if cached:
             logger.info(
                 {
@@ -496,11 +517,20 @@ class ProxyManager:
         validation).  To strike a balance between throughput and distribution,
         a random proxy is chosen from the fastest :data:`_TOP_PROXY_COUNT`
         candidates (or all available proxies when the pool is smaller).
+
+        Proxies that have exceeded :data:`_PROXY_TTL_SECONDS` since they were
+        validated are treated as expired and excluded from the selection.
         """
+        now = time.time()
         with self._lock:
-            if not self._working:
+            valid = [
+                p
+                for p in self._working
+                if now - self._proxy_timestamps.get(p, 0.0) <= _PROXY_TTL_SECONDS
+            ]
+            if not valid:
                 return None
-            pool = self._working[:_TOP_PROXY_COUNT]
+            pool = valid[:_TOP_PROXY_COUNT]
             return random.choice(pool)
 
     def mark_proxy_failed(self, proxy_url: str) -> None:
@@ -516,6 +546,7 @@ class ProxyManager:
                 self._working.remove(proxy_url)
             except ValueError:
                 return  # already removed, nothing to do
+            self._proxy_timestamps.pop(proxy_url, None)
             remaining = len(self._working)
 
         logger.warning(
@@ -558,8 +589,12 @@ class ProxyManager:
             )
             return
         working = _validate_proxies(candidates)
+        now = time.time()
         with self._lock:
             self._working = working
+            # Stamp every freshly validated proxy with the current time so the
+            # 20-minute lifetime clock starts from now.
+            self._proxy_timestamps = {proxy: now for proxy in working}
         # Persist to disk so the pool survives a process restart.
         try:
             _save_proxy_cache(working, self._cache_file)
@@ -574,15 +609,60 @@ class ProxyManager:
             {
                 "event": "proxy_manager.refresh_done",
                 "working": len(working),
+                "ttl_seconds": _PROXY_TTL_SECONDS,
             }
         )
 
+    def _evict_expired(self) -> tuple[int, int]:
+        """Remove proxies that have exceeded :data:`_PROXY_TTL_SECONDS` from the pool.
+
+        Returns a ``(evicted, remaining)`` tuple.  Callers should trigger a
+        background refresh when *remaining* reaches zero.
+        """
+        now = time.time()
+        with self._lock:
+            before = len(self._working)
+            self._working = [
+                p
+                for p in self._working
+                if now - self._proxy_timestamps.get(p, 0.0) <= _PROXY_TTL_SECONDS
+            ]
+            evicted = before - len(self._working)
+            if evicted:
+                current = set(self._working)
+                self._proxy_timestamps = {k: v for k, v in self._proxy_timestamps.items() if k in current}
+            remaining = len(self._working)
+        return evicted, remaining
+
     async def _refresh_loop(self) -> None:
-        """Background task: refresh the proxy pool every :data:`_REFRESH_INTERVAL` seconds."""
+        """Background task: evict expired proxies every minute and refresh every 15 minutes."""
+        last_refresh = time.monotonic()
         while True:
-            await asyncio.sleep(_REFRESH_INTERVAL)
+            await asyncio.sleep(_EXPIRY_CHECK_INTERVAL)
             try:
-                await asyncio.to_thread(self._refresh)
+                evicted, remaining = await asyncio.to_thread(self._evict_expired)
+                if evicted:
+                    logger.info(
+                        {
+                            "event": "proxy_manager.proxies_expired",
+                            "evicted": evicted,
+                            "remaining": remaining,
+                        }
+                    )
+                    if remaining == 0:
+                        logger.warning(
+                            {
+                                "event": "proxy_manager.pool_empty_after_expiry",
+                                "msg": "All proxies expired; triggering immediate refresh",
+                            }
+                        )
+                        await asyncio.to_thread(self._refresh)
+                        last_refresh = time.monotonic()
+
+                # Full refresh on the normal 15-minute cadence.
+                if time.monotonic() - last_refresh >= _REFRESH_INTERVAL:
+                    await asyncio.to_thread(self._refresh)
+                    last_refresh = time.monotonic()
             except Exception as exc:
                 logger.warning(
                     {
