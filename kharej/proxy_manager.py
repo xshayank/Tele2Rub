@@ -1,11 +1,12 @@
 """HTTP proxy manager for the Kharej VPS worker.
 
-Fetches HTTP proxy lists from multiple remote URLs, validates them by
-measuring actual download throughput through each proxy, then maintains a
-rotating pool of working proxies.  A background asyncio task refreshes the
-pool every 15 minutes automatically.  Validated proxies are persisted to disk
-so the pool is available immediately after a process restart without waiting
-for the first full refresh cycle.
+Fetches HTTP proxy lists from multiple sources via :pypi:`pyfreeproxy`
+(CharlesPikachu/freeproxy), validates them by measuring actual download
+throughput through each proxy, then maintains a rotating pool of working
+proxies.  A background asyncio task refreshes the pool every 15 minutes
+automatically.  Validated proxies are persisted to disk so the pool is
+available immediately after a process restart without waiting for the first
+full refresh cycle.
 
 The module exposes a process-global singleton :data:`proxy_manager` that all
 downloaders should use::
@@ -17,6 +18,16 @@ downloaders should use::
     await proxy_manager.start()                 # begin background refresh
     await proxy_manager.stop()                  # cancel background refresh
 
+Proxy sourcing
+--------------
+Candidates are scraped from several well-maintained free-proxy sources using
+the :func:`freeproxy.modules.BuildProxiedSession` API from ``pyfreeproxy``.
+Only HTTP/HTTPS proxies are collected so that yt-dlp can use them directly
+(SOCKS proxies require extra yt-dlp flags not currently applied).
+
+If ``pyfreeproxy`` is not installed the manager falls back gracefully to an
+empty candidate list and logs a warning.
+
 Proxy validation
 ----------------
 Each candidate proxy is tested with a real download speed check:
@@ -27,9 +38,10 @@ Each candidate proxy is tested with a real download speed check:
 3. Download :data:`_SPEEDTEST_SAMPLE_BYTES` bytes and measure throughput.
 4. Proxy is accepted only when throughput ≥ :data:`_MIN_SPEED_BPS`.
 
-Measuring actual throughput rather than just connectivity filters out proxies
-that accept connections but are too slow or throttled to be useful for media
-downloads.  Validation runs concurrently in a
+Additionally each candidate must pass a YouTube HTTPS reachability check so
+that yt-dlp proxy failures are minimised.
+
+Validation runs concurrently in a
 :class:`~concurrent.futures.ThreadPoolExecutor` so it does not block the
 asyncio event loop.
 
@@ -51,7 +63,6 @@ import random
 import tempfile
 import threading
 import time
-import urllib.request
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -62,16 +73,17 @@ logger = logging.getLogger("kharej.proxy_manager")
 # Constants
 # ---------------------------------------------------------------------------
 
-#: Remote URLs that provide HTTP proxy lists, one entry per line.
-#: Supported formats: ``host:port`` and ``http://host:port``.
-#: All lists are fetched and merged before validation so the pool is as large
-#: as possible.
-_PROXY_LIST_URLS: list[str] = [
-    (
-        "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main"
-        "/proxies/protocols/http/data.txt"
-    ),
-    "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",  # repo name is misleading; file contains HTTP proxies
+#: pyfreeproxy source names (HTTP/HTTPS only) used to scrape proxy candidates.
+#: All lists are merged before validation so the pool is as large as possible.
+#: Sources that only provide SOCKS proxies are excluded because yt-dlp is
+#: invoked with a plain ``--proxy http://...`` argument.
+_FREEPROXY_SOURCES: list[str] = [
+    "ProxiflyProxiedSession",
+    "GeonodeProxiedSession",
+    "OpenProxyListProxiedSession",
+    "FreeproxylistProxiedSession",
+    "ProxylistProxiedSession",
+    "TheSpeedXProxiedSession",
 ]
 
 #: Public HTTP speed-test server used for proxy validation.  Using a numeric
@@ -102,9 +114,6 @@ _YOUTUBE_CHECK_TIMEOUT: float = 10.0
 
 #: Seconds between automatic proxy list refreshes (15 minutes).
 _REFRESH_INTERVAL: float = 900.0
-
-#: HTTP request timeout when fetching the remote proxy list (seconds).
-_FETCH_TIMEOUT: float = 20.0
 
 #: Path to the disk cache that persists validated proxies across restarts.
 _PROXY_CACHE_FILE: Path = Path(__file__).parent / "state" / "proxies.json"
@@ -214,7 +223,7 @@ def _http_youtube_check(proxy_url: str) -> bool:
 
     proxies = {"http": proxy_url, "https": proxy_url}
     try:
-        resp = requests.get(
+        requests.get(
             _YOUTUBE_CHECK_URL,
             proxies=proxies,
             timeout=_YOUTUBE_CHECK_TIMEOUT,
@@ -242,77 +251,81 @@ def _validate_single_proxy(proxy_url: str) -> bool:
     return _http_speed_check(proxy_url) and _http_youtube_check(proxy_url)
 
 
-def _parse_proxy_line(line: str) -> str | None:
-    """Parse a proxy list line into an ``http://host:port`` URL or ``None``.
+def _fetch_proxies_from_source(source: str) -> list[str]:
+    """Scrape HTTP/HTTPS proxy candidates from a single pyfreeproxy *source*.
 
-    Accepts both plain ``host:port`` entries and lines that already carry an
-    ``http://`` (or any other ``scheme://``) prefix.
+    Uses :func:`freeproxy.modules.BuildProxiedSession` to scrape the source
+    and returns a deduplicated list of ``http://ip:port`` URLs.  Only HTTP and
+    HTTPS proxy entries are included so that yt-dlp can use them without extra
+    SOCKS flags.
+
+    Returns an empty list if pyfreeproxy is not installed or the source fails.
     """
-    line = line.strip()
-    if not line or line.startswith("#"):
-        return None
-    # Strip any existing scheme prefix (e.g. "http://", "socks5://")
-    if "://" in line:
-        line = line.split("://", 1)[1]
-    parts = line.rsplit(":", 1)
-    if len(parts) != 2:
-        return None
-    host, port_str = parts
-    host = host.strip()
-    port_str = port_str.strip()
-    if not host or not port_str.isdigit():
-        return None
-    port = int(port_str)
-    if not (1 <= port <= 65535):
-        return None
-    return f"http://{host}:{port}"
-
-
-def _fetch_proxy_list(url: str) -> list[str]:
-    """Fetch raw proxy list text from *url* and return parsed ``http://`` URLs."""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "RubeTunes-ProxyManager/1.0"})
-        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+        from freeproxy.modules import BuildProxiedSession  # noqa: PLC0415
+    except ImportError:
+        logger.warning(
+            {
+                "event": "proxy_manager.pyfreeproxy_missing",
+                "msg": "pyfreeproxy is not installed; install pyfreeproxy to enable proxy scraping",
+            }
+        )
+        return []
+
+    try:
+        sess = BuildProxiedSession(
+            {
+                "type": source,
+                "max_pages": 1,
+                "disable_print": True,
+            }  # disable_print is a standard pyfreeproxy param
+        )
+        proxy_infos = sess.refreshproxies()
     except Exception as exc:
         logger.warning(
             {
-                "event": "proxy_manager.fetch_failed",
-                "url": url,
+                "event": "proxy_manager.source_fetch_failed",
+                "source": source,
                 "error": repr(exc),
             }
         )
         return []
 
-    proxies: list[str] = []
-    for line in raw.splitlines():
-        parsed = _parse_proxy_line(line)
-        if parsed:
-            proxies.append(parsed)
+    results: list[str] = []
+    seen: set[str] = set()
+    for info in proxy_infos:
+        protocol = (info.protocol or "").lower()
+        # Only HTTP/HTTPS proxies; SOCKS requires additional yt-dlp flags.
+        if protocol not in ("http", "https"):
+            continue
+        proxy_url = f"http://{info.ip}:{info.port}"
+        if proxy_url not in seen:
+            seen.add(proxy_url)
+            results.append(proxy_url)
 
     logger.info(
         {
-            "event": "proxy_manager.fetch_done",
-            "url": url,
-            "candidates": len(proxies),
+            "event": "proxy_manager.source_fetch_done",
+            "source": source,
+            "candidates": len(results),
         }
     )
-    return proxies
+    return results
 
 
-def _fetch_all_proxy_lists(urls: list[str]) -> list[str]:
-    """Fetch and deduplicate proxies from all *urls*."""
+def _fetch_all_proxy_lists(sources: list[str]) -> list[str]:
+    """Scrape and deduplicate HTTP proxies from all pyfreeproxy *sources*."""
     seen: set[str] = set()
     combined: list[str] = []
-    for url in urls:
-        for proxy in _fetch_proxy_list(url):
+    for source in sources:
+        for proxy in _fetch_proxies_from_source(source):
             if proxy not in seen:
                 seen.add(proxy)
                 combined.append(proxy)
     logger.info(
         {
             "event": "proxy_manager.fetch_all_done",
-            "sources": len(urls),
+            "sources": len(sources),
             "total_candidates": len(combined),
         }
     )
@@ -360,8 +373,8 @@ class ProxyManager:
     have a non-empty pool even before the first background refresh completes.
     """
 
-    def __init__(self, urls: list[str] | None = None, cache_file: Path | None = None) -> None:
-        self._urls: list[str] = urls if urls is not None else list(_PROXY_LIST_URLS)
+    def __init__(self, sources: list[str] | None = None, cache_file: Path | None = None) -> None:
+        self._sources: list[str] = sources if sources is not None else list(_FREEPROXY_SOURCES)
         self._cache_file: Path = cache_file or _PROXY_CACHE_FILE
         self._lock = threading.Lock()
         # Pre-populate from disk so requests succeed immediately after restart.
@@ -454,8 +467,8 @@ class ProxyManager:
 
     def _refresh(self) -> None:
         """Synchronously fetch and validate the proxy list, then update the pool."""
-        logger.info({"event": "proxy_manager.refresh_start", "urls": self._urls})
-        candidates = _fetch_all_proxy_lists(self._urls)
+        logger.info({"event": "proxy_manager.refresh_start", "sources": self._sources})
+        candidates = _fetch_all_proxy_lists(self._sources)
         if not candidates:
             logger.warning(
                 {
