@@ -417,6 +417,10 @@ class YoutubeDownloader:
                             continue
                     raise
 
+                # Download succeeded — credit the proxy before uploading.
+                if proxy:
+                    proxy_manager.mark_proxy_succeeded(proxy)
+
                 # Download succeeded — find output file and upload
                 _MEDIA_EXTS = {
                     ".mp3", ".m4a", ".flac", ".ogg", ".opus",

@@ -13,10 +13,11 @@ downloaders should use::
 
     from kharej.proxy_manager import proxy_manager
 
-    proxy_url = proxy_manager.get_proxy()       # "http://ip:port" or None
-    proxy_manager.mark_proxy_failed(proxy_url)  # evict a bad proxy immediately
-    await proxy_manager.start()                 # begin background refresh
-    await proxy_manager.stop()                  # cancel background refresh
+    proxy_url = proxy_manager.get_proxy()           # "http://ip:port" or None
+    proxy_manager.mark_proxy_succeeded(proxy_url)   # record a successful download
+    proxy_manager.mark_proxy_failed(proxy_url)      # evict a bad proxy immediately
+    await proxy_manager.start()                     # begin background refresh
+    await proxy_manager.stop()                      # cancel background refresh
 
 Proxy sourcing
 --------------
@@ -53,12 +54,30 @@ the working pool.  The background loop checks for expired proxies every
 :data:`_EXPIRY_CHECK_INTERVAL` seconds (1 minute) and triggers an immediate
 full refresh when the pool becomes empty due to expiry.
 
+Proxy scoring
+-------------
+Each proxy accumulates a composite *score* that drives selection probability:
+
+* **Speed** — raw download throughput measured during validation (bytes/sec).
+* **Success bonus** — every confirmed successful download adds 5 % to the
+  weight (capped at +100 %, i.e. a 2× multiplier at 20+ successes).
+* **Scan-pass bonus** — every additional validation cycle the proxy survives
+  adds 10 % (capped at +100 %, i.e. a 2× multiplier after 10+ cycles).
+
+:meth:`~ProxyManager.get_proxy` uses *weighted random* selection so that
+high-scoring proxies are chosen more frequently while still giving every
+working proxy some chance of being selected.
+
+Callers should invoke :meth:`~ProxyManager.mark_proxy_succeeded` after each
+successful download so that the scoring system improves over time.
+
 Disk cache
 ----------
-After every successful refresh the validated proxy list is written atomically
-to :data:`_PROXY_CACHE_FILE` (``kharej/state/proxies.json``).  On startup the
-cache is loaded immediately so requests do not fail while the first background
-refresh is still in progress.
+After every successful refresh the validated proxy list (including per-proxy
+score records) is written atomically to :data:`_PROXY_CACHE_FILE`
+(``kharej/state/proxies.json``).  On startup the cache is loaded immediately
+so requests do not fail while the first background refresh is still in
+progress.  The legacy plain-list cache format is accepted transparently.
 """
 
 from __future__ import annotations
@@ -73,6 +92,7 @@ import threading
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger("kharej.proxy_manager")
@@ -159,28 +179,100 @@ _PROXY_CACHE_FILE: Path = Path(__file__).parent / "state" / "proxies.json"
 
 
 # ---------------------------------------------------------------------------
+# Proxy scoring
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _ProxyRecord:
+    """Runtime statistics for a single validated proxy.
+
+    Attributes:
+        speed_bps:   Download throughput measured during the most recent
+                     validation (bytes/sec).
+        successes:   Number of downloads that completed successfully through
+                     this proxy.
+        scan_passes: Number of validation cycles this proxy has survived
+                     (starts at 1 when first validated).
+    """
+
+    speed_bps: float
+    successes: int = field(default=0)
+    scan_passes: int = field(default=1)
+
+
+def _compute_proxy_weight(record: _ProxyRecord) -> float:
+    """Return the composite selection weight for a proxy.
+
+    Higher weight → higher probability of being chosen by
+    :meth:`~ProxyManager.get_proxy`.
+
+    Components:
+
+    * **speed_bps** — raw throughput from the most recent validation.
+    * **success bonus** — each confirmed download success adds 5 % (capped
+      at +100 %, giving a maximum 2× multiplier at 20+ successes).
+    * **scan bonus** — each additional validation cycle survived adds 10 %
+      (capped at +100 %, giving a maximum 2× multiplier after 10+ cycles).
+    """
+    success_bonus = 1.0 + min(record.successes * 0.05, 1.0)
+    scan_bonus = 1.0 + min((record.scan_passes - 1) * 0.1, 1.0)
+    return record.speed_bps * success_bonus * scan_bonus
+
+
+# ---------------------------------------------------------------------------
 # Disk cache helpers
 # ---------------------------------------------------------------------------
 
 
-def _load_proxy_cache(path: Path) -> list[str]:
-    """Load the saved proxy list from *path*; return an empty list on any error."""
+def _load_proxy_cache(path: Path) -> dict[str, _ProxyRecord]:
+    """Load saved proxy records from *path*; return an empty dict on any error.
+
+    Accepts both the legacy format (a plain JSON array of URL strings) and the
+    current format (a JSON array of ``{"url", "speed_bps", "successes",
+    "scan_passes"}`` objects).  Legacy entries are converted to fresh records
+    with the minimum acceptable speed so that they are usable immediately
+    while the first background refresh fills in accurate measurements.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return [p for p in data if isinstance(p, str)]
+        if not isinstance(data, list):
+            return {}
+        records: dict[str, _ProxyRecord] = {}
+        for item in data:
+            if isinstance(item, str):
+                # Legacy format: plain URL string.
+                records[item] = _ProxyRecord(speed_bps=_MIN_SPEED_BPS)
+            elif isinstance(item, dict):
+                url = item.get("url")
+                if not isinstance(url, str) or not url:
+                    continue
+                records[url] = _ProxyRecord(
+                    speed_bps=float(item.get("speed_bps") or _MIN_SPEED_BPS),
+                    successes=int(item.get("successes") or 0),
+                    scan_passes=max(1, int(item.get("scan_passes") or 1)),
+                )
+        return records
     except Exception:
-        pass
-    return []
+        return {}
 
 
-def _save_proxy_cache(proxies: list[str], path: Path) -> None:
-    """Atomically write *proxies* to *path* as a JSON array."""
+def _save_proxy_cache(records: dict[str, _ProxyRecord], path: Path) -> None:
+    """Atomically write *records* to *path* as a JSON array of score objects."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = [
+        {
+            "url": url,
+            "speed_bps": rec.speed_bps,
+            "successes": rec.successes,
+            "scan_passes": rec.scan_passes,
+        }
+        for url, rec in records.items()
+    ]
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".proxies_", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(proxies, f)
+            json.dump(payload, f)
         os.replace(tmp, path)
     except Exception:
         try:
@@ -411,12 +503,12 @@ def _fetch_all_proxy_lists(sources: list[str]) -> list[str]:
     return combined
 
 
-def _validate_proxies(proxy_urls: Sequence[str]) -> list[str]:
-    """Return valid *proxy_urls* sorted by descending download speed.
+def _validate_proxies(proxy_urls: Sequence[str]) -> list[tuple[str, float]]:
+    """Return valid ``(url, speed_bps)`` pairs from *proxy_urls*, sorted fastest-first.
 
     Proxies are validated concurrently and the resulting list is ordered
-    fastest-first so that :meth:`ProxyManager.get_proxy` can preferentially
-    select high-throughput proxies.
+    fastest-first so that :meth:`ProxyManager._refresh` can rank and score
+    them correctly.
     """
     if not proxy_urls:
         return []
@@ -433,18 +525,17 @@ def _validate_proxies(proxy_urls: Sequence[str]) -> list[str]:
     with ThreadPoolExecutor(max_workers=_VALIDATE_WORKERS) as executor:
         list(executor.map(_check, proxy_urls))
 
-    # Sort fastest-first so that get_proxy() picks from the best candidates.
+    # Sort fastest-first so that _refresh() can rank proxies correctly.
     results.sort(key=lambda t: t[1], reverse=True)
-    working = [url for url, _ in results]
 
     logger.info(
         {
             "event": "proxy_manager.validation_done",
             "total": len(proxy_urls),
-            "working": len(working),
+            "working": len(results),
         }
     )
-    return working
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +551,11 @@ class ProxyManager:
 
     On instantiation the disk cache is loaded immediately so callers always
     have a non-empty pool even before the first background refresh completes.
+
+    Each proxy carries a :class:`_ProxyRecord` that tracks its download speed,
+    number of confirmed successful downloads, and how many validation cycles it
+    has survived.  :meth:`get_proxy` performs *weighted random* selection so
+    that higher-scoring proxies are chosen more often.
     """
 
     def __init__(self, sources: list[str] | None = None, cache_file: Path | None = None) -> None:
@@ -468,20 +564,29 @@ class ProxyManager:
         self._lock = threading.Lock()
         # Per-proxy validation timestamps.  Proxies older than _PROXY_TTL_SECONDS are evicted.
         self._proxy_timestamps: dict[str, float] = {}
+        # Per-proxy score records (speed, successes, scan passes).
+        self._proxy_records: dict[str, _ProxyRecord] = {}
         # Pre-populate from disk so requests succeed immediately after restart.
         # Cached proxies are granted a fresh TTL because start() always triggers
         # an immediate full refresh that will validate and re-stamp them before
         # the 20-minute window elapses.
-        cached = _load_proxy_cache(self._cache_file)
+        cached_records = _load_proxy_cache(self._cache_file)
         now = time.time()
-        self._working: list[str] = cached
-        for proxy in cached:
+        # Sort cached proxies by their stored composite weight so the best
+        # proxies are at the front of the working list right from startup.
+        self._working: list[str] = sorted(
+            cached_records.keys(),
+            key=lambda u: _compute_proxy_weight(cached_records[u]),
+            reverse=True,
+        )
+        self._proxy_records = cached_records
+        for proxy in self._working:
             self._proxy_timestamps[proxy] = now
-        if cached:
+        if self._working:
             logger.info(
                 {
                     "event": "proxy_manager.cache_loaded",
-                    "count": len(cached),
+                    "count": len(self._working),
                 }
             )
         self._task: asyncio.Task | None = None
@@ -521,12 +626,13 @@ class ProxyManager:
         return [p for p in proxies if now - self._proxy_timestamps.get(p, 0.0) <= _PROXY_TTL_SECONDS]
 
     def get_proxy(self) -> str | None:
-        """Return a random working ``http://host:port`` proxy URL, or ``None``.
+        """Return a working ``http://host:port`` proxy URL chosen by weighted random, or ``None``.
 
-        Proxies are stored sorted fastest-first (by the speed measured during
-        validation).  To strike a balance between throughput and distribution,
-        a random proxy is chosen from the fastest :data:`_TOP_PROXY_COUNT`
-        candidates (or all available proxies when the pool is smaller).
+        Proxies are stored sorted by their composite score (speed × success
+        bonus × scan-pass bonus) and a weighted-random selection is made from
+        the top :data:`_TOP_PROXY_COUNT` candidates (or all available proxies
+        when the pool is smaller).  Higher-scoring proxies are therefore chosen
+        more often while every working proxy retains some chance of selection.
 
         Proxies that have exceeded :data:`_PROXY_TTL_SECONDS` since they were
         validated are treated as expired and excluded from the selection.
@@ -537,7 +643,35 @@ class ProxyManager:
             if not valid:
                 return None
             pool = valid[:_TOP_PROXY_COUNT]
-            return random.choice(pool)
+            weights = [
+                _compute_proxy_weight(
+                    self._proxy_records.get(p, _ProxyRecord(speed_bps=_MIN_SPEED_BPS))
+                )
+                for p in pool
+            ]
+            return random.choices(pool, weights=weights, k=1)[0]
+
+    def mark_proxy_succeeded(self, proxy_url: str) -> None:
+        """Record a successful download through *proxy_url*.
+
+        Increments the proxy's success counter so that future weighted
+        selection favours it more strongly.  If the proxy is no longer in the
+        working pool (e.g. evicted by a concurrent failure) the call is a
+        no-op.
+        """
+        with self._lock:
+            rec = self._proxy_records.get(proxy_url)
+            if rec is None:
+                return
+            rec.successes += 1
+
+        logger.debug(
+            {
+                "event": "proxy_manager.proxy_succeeded",
+                "proxy": proxy_url,
+                "successes": rec.successes,
+            }
+        )
 
     def mark_proxy_failed(self, proxy_url: str) -> None:
         """Evict *proxy_url* from the working pool immediately.
@@ -553,6 +687,7 @@ class ProxyManager:
             except ValueError:
                 return  # already removed, nothing to do
             self._proxy_timestamps.pop(proxy_url, None)
+            self._proxy_records.pop(proxy_url, None)
             remaining = len(self._working)
 
         logger.warning(
@@ -594,16 +729,38 @@ class ProxyManager:
                 }
             )
             return
-        working = _validate_proxies(candidates)
+        working_with_speeds = _validate_proxies(candidates)
         now = time.time()
         with self._lock:
+            old_records = self._proxy_records
+            new_records: dict[str, _ProxyRecord] = {}
+            for url, speed in working_with_speeds:
+                if url in old_records:
+                    # Proxy survived re-validation: preserve download history,
+                    # update the measured speed, and credit an extra scan pass.
+                    rec = old_records[url]
+                    rec.speed_bps = speed
+                    rec.scan_passes += 1
+                    new_records[url] = rec
+                else:
+                    new_records[url] = _ProxyRecord(speed_bps=speed)
+
+            # Sort by descending composite weight so the best proxies sit at
+            # the front of _working and get_proxy()'s top-N slice is correct.
+            working = sorted(
+                new_records.keys(),
+                key=lambda u: _compute_proxy_weight(new_records[u]),
+                reverse=True,
+            )
             self._working = working
+            self._proxy_records = new_records
             # Stamp every freshly validated proxy with the current time so the
             # 20-minute lifetime clock starts from now.
             self._proxy_timestamps = {proxy: now for proxy in working}
-        # Persist to disk so the pool survives a process restart.
+        # Persist to disk so the pool (including score records) survives a
+        # process restart.
         try:
-            _save_proxy_cache(working, self._cache_file)
+            _save_proxy_cache(self._proxy_records, self._cache_file)
         except Exception as exc:
             logger.warning(
                 {
@@ -637,6 +794,7 @@ class ProxyManager:
             if evicted:
                 current = set(self._working)
                 self._proxy_timestamps = {k: v for k, v in self._proxy_timestamps.items() if k in current}
+                self._proxy_records = {k: v for k, v in self._proxy_records.items() if k in current}
             remaining = len(self._working)
         return evicted, remaining
 
