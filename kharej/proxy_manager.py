@@ -513,7 +513,7 @@ class ProxyManager:
         """Enable or disable proxy usage globally for this process."""
         with self._lock:
             self._enabled = enabled
-        logger.info({"event": "proxy_manager.enabled", "enabled": enabled})
+            logger.info({"event": "proxy_manager.enabled", "enabled": enabled})
 
     def mark_proxy_failed(self, proxy_url: str) -> None:
         """Evict *proxy_url* from the working pool immediately.

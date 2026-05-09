@@ -315,8 +315,6 @@ async def run(*, no_proxy: bool = False) -> int:
     await rubika.start()
     if not no_proxy:
         await proxy_manager.start()
-    else:
-        logger.info({"event": "worker.proxy_disabled"})
     logger.info({"event": "worker.started"})
 
     stop_event = asyncio.Event()
