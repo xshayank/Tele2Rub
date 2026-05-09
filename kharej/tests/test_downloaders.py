@@ -1261,3 +1261,74 @@ async def test_spotify_mp3_falls_back_to_musicdl() -> None:
             )
 
     assert result.suffix == ".mp3"
+
+
+# ---------------------------------------------------------------------------
+# _is_proxy_error — mid-download proxy drop detection
+# ---------------------------------------------------------------------------
+
+
+class TestIsProxyError:
+    """Unit tests for the youtube _is_proxy_error helper.
+
+    Verifies that mid-download proxy drops (where yt-dlp exits non-zero but
+    the only output is ``[download] X%`` progress lines) are correctly detected
+    as proxy failures so the job is retried with a new proxy.
+    """
+
+    def _check(self, msg: str) -> bool:
+        from kharej.downloaders.youtube import _is_proxy_error
+
+        return _is_proxy_error(msg)
+
+    def test_keyword_proxy_detected(self) -> None:
+        assert self._check("yt-dlp exited with code 1:\nERROR: Connection refused") is True
+
+    def test_keyword_timed_out_detected(self) -> None:
+        assert self._check("yt-dlp exited with code 1:\nERROR: timed out") is True
+
+    def test_keyword_no_video_formats_detected(self) -> None:
+        assert self._check("yt-dlp exited with code 1:\nno video formats found") is True
+
+    def test_mid_download_only_progress_lines(self) -> None:
+        """Only [download] progress lines → mid-download proxy drop → True."""
+        msg = (
+            "yt-dlp exited with code 1:\n"
+            "[download]  18.2% of  486.64MiB at  637.47KiB/s ETA 10:39\n"
+            "[download]  18.3% of  486.64MiB at    1.04MiB/s ETA 06:23\n"
+            "[download]  18.5% of  486.64MiB at    1.70MiB/s ETA 03:52\n"
+        )
+        assert self._check(msg) is True
+
+    def test_mid_download_dashsegments_lines(self) -> None:
+        """[dashsegments] lines are also treated as progress, not errors."""
+        msg = (
+            "yt-dlp exited with code 1:\n"
+            "[dashsegments] Total fragments: 50\n"
+            "[download]  42.0% of  100.00MiB at    2.00MiB/s ETA 00:30\n"
+        )
+        assert self._check(msg) is True
+
+    def test_empty_output_is_proxy_error(self) -> None:
+        """Empty yt-dlp output (no progress, no error) is also treated as a proxy drop."""
+        assert self._check("yt-dlp exited with code 1:\n") is True
+
+    def test_content_error_not_proxy(self) -> None:
+        """A genuine content error must NOT be treated as a proxy failure."""
+        msg = (
+            "yt-dlp exited with code 1:\n"
+            "ERROR: [youtube] dQw4w9WgXcQ: This video has been removed by the uploader\n"
+        )
+        assert self._check(msg) is False
+
+    def test_forbidden_error_not_proxy(self) -> None:
+        assert self._check("yt-dlp exited with code 1:\nERROR: HTTP Error 403: Forbidden") is False
+
+    def test_progress_plus_real_error_not_proxy(self) -> None:
+        """Mix of progress lines and a real error → not a proxy failure."""
+        msg = (
+            "yt-dlp exited with code 1:\n"
+            "[download]  10.0% of  200.00MiB at    1.00MiB/s ETA 03:00\n"
+            "ERROR: [youtube] dQw4w9WgXcQ: Video unavailable\n"
+        )
+        assert self._check(msg) is False

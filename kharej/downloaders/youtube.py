@@ -72,11 +72,39 @@ _PROXY_ERROR_KEYWORDS: tuple[str, ...] = (
     "sign in to confirm",
 )
 
+#: yt-dlp output line prefixes that represent download progress, not errors.
+#: Used by :func:`_is_proxy_error` to detect mid-download proxy drops where
+#: the proxy severs the TCP connection without sending an HTTP error, leaving
+#: only progress lines in the yt-dlp output.
+_YTDLP_PROGRESS_PREFIXES: tuple[str, ...] = ("[download]", "[dashsegments]", "[hlsnative]")
+
 
 def _is_proxy_error(error_msg: str) -> bool:
-    """Return True if *error_msg* looks like a proxy or network connectivity failure."""
+    """Return True if *error_msg* looks like a proxy or network connectivity failure.
+
+    In addition to matching known error keywords, this function also detects
+    *mid-download proxy drops*: cases where the proxy severs the connection
+    while yt-dlp is already downloading, causing yt-dlp to exit non-zero
+    without printing an explicit error — only ``[download] X%`` progress lines
+    appear in the output.  These would otherwise not match any keyword and
+    would be incorrectly treated as permanent failures.
+    """
     lower = error_msg.lower()
-    return any(kw in lower for kw in _PROXY_ERROR_KEYWORDS)
+    if any(kw in lower for kw in _PROXY_ERROR_KEYWORDS):
+        return True
+
+    # Mid-download proxy drop: yt-dlp exits non-zero but every non-empty line
+    # is either the RuntimeError header ("yt-dlp exited with code N:") or a
+    # download-progress line ("[download] X%…").  The proxy closed the
+    # connection without sending an HTTP error, so no error text was printed.
+    meaningful_lines = [
+        line
+        for line in error_msg.splitlines()
+        if line.strip()
+        and not line.strip().startswith("yt-dlp exited")
+        and not any(line.strip().startswith(pfx) for pfx in _YTDLP_PROGRESS_PREFIXES)
+    ]
+    return len(meaningful_lines) == 0
 
 
 def _find_ytdlp(settings: "KharejSettings") -> str:

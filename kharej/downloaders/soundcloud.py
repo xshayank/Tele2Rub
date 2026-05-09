@@ -54,11 +54,29 @@ _PROXY_ERROR_KEYWORDS: tuple[str, ...] = (
     "errno",
 )
 
+#: yt-dlp output line prefixes that represent download progress, not errors.
+_YTDLP_PROGRESS_PREFIXES: tuple[str, ...] = ("[download]", "[dashsegments]", "[hlsnative]")
+
 
 def _is_proxy_error(error_msg: str) -> bool:
-    """Return True if *error_msg* looks like a proxy or network connectivity failure."""
+    """Return True if *error_msg* looks like a proxy or network connectivity failure.
+
+    Also detects mid-download proxy drops where yt-dlp exits non-zero but the
+    only output consists of ``[download] X%`` progress lines (the proxy severed
+    the connection without sending an HTTP error response).
+    """
     lower = error_msg.lower()
-    return any(kw in lower for kw in _PROXY_ERROR_KEYWORDS)
+    if any(kw in lower for kw in _PROXY_ERROR_KEYWORDS):
+        return True
+
+    meaningful_lines = [
+        line
+        for line in error_msg.splitlines()
+        if line.strip()
+        and not line.strip().startswith("yt-dlp exited")
+        and not any(line.strip().startswith(pfx) for pfx in _YTDLP_PROGRESS_PREFIXES)
+    ]
+    return len(meaningful_lines) == 0
 
 
 class SoundcloudDownloader:
