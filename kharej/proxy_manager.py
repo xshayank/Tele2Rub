@@ -250,7 +250,9 @@ def _load_proxy_cache(path: Path) -> dict[str, _ProxyRecord]:
                 records[url] = _ProxyRecord(
                     speed_bps=float(item.get("speed_bps") or _MIN_SPEED_BPS),
                     successes=int(item.get("successes") or 0),
-                    scan_passes=max(1, int(item.get("scan_passes") or 1)),
+                    # max(1, ...) guards against 0 or negative values that could
+                    # appear in manually edited or corrupted cache files.
+                    scan_passes=max(1, int(item.get("scan_passes") or 0)),
                 )
         return records
     except Exception:
@@ -644,6 +646,9 @@ class ProxyManager:
                 return None
             pool = valid[:_TOP_PROXY_COUNT]
             weights = [
+                # Every proxy in _working always has a corresponding record.
+                # The .get() fallback is a defensive guard against any transient
+                # inconsistency (e.g. loading an edge-case cache).
                 _compute_proxy_weight(
                     self._proxy_records.get(p, _ProxyRecord(speed_bps=_MIN_SPEED_BPS))
                 )
@@ -664,12 +669,15 @@ class ProxyManager:
             if rec is None:
                 return
             rec.successes += 1
+            # Capture while holding the lock so the logged value is consistent
+            # with the state change even if another thread modifies the record.
+            successes = rec.successes
 
         logger.debug(
             {
                 "event": "proxy_manager.proxy_succeeded",
                 "proxy": proxy_url,
-                "successes": rec.successes,
+                "successes": successes,
             }
         )
 
