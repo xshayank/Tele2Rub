@@ -61,9 +61,7 @@ async def app(db_engine):
     settings = IranSettings(SECRET_KEY="test-secret-step8")
     test_app = create_app(settings)
 
-    session_factory = async_sessionmaker(
-        db_engine, class_=AsyncSession, expire_on_commit=False
-    )
+    session_factory = async_sessionmaker(db_engine, class_=AsyncSession, expire_on_commit=False)
 
     async def _override_get_db():
         from fastapi import HTTPException
@@ -231,7 +229,15 @@ class TestUIPageContent:
     async def test_pages_use_rtl_layout(self, client):
         """All pages must include dir=rtl for Persian RTL layout."""
         job_id = str(uuid.uuid4())
-        paths = ["/", "/login", "/register", "/pending", "/library", "/settings", f"/ui/jobs/{job_id}"]
+        paths = [
+            "/",
+            "/login",
+            "/register",
+            "/pending",
+            "/library",
+            "/settings",
+            f"/ui/jobs/{job_id}",
+        ]
         for path in paths:
             resp = await client.get(path)
             assert 'dir="rtl"' in resp.text, f"RTL not found in {path}"
@@ -258,6 +264,16 @@ class TestUIPageContent:
         assert "rube_desktop.svg" in resp.text or "rube_mobile.svg" in resp.text
 
     @pytest.mark.asyncio
+    async def test_pages_include_error_normalizer_helper(self, client):
+        """Base template should expose shared API error formatting helper."""
+        home = await client.get("/")
+        job = await client.get(f"/ui/jobs/{uuid.uuid4()}")
+        search = await client.get("/search")
+        assert "window.getApiErrorMessage" in home.text
+        assert "window.getApiErrorMessage" in job.text
+        assert "window.getApiErrorMessage" in search.text
+
+    @pytest.mark.asyncio
     async def test_static_mobile_svg_ok(self, client):
         """GET /static/rube_mobile.svg must return 200 with image/svg+xml."""
         resp = await client.get("/static/rube_mobile.svg")
@@ -271,18 +287,15 @@ class TestUIPageContent:
         assert resp.status_code == 200
         assert "image/svg+xml" in resp.headers["content-type"]
 
-
-# ---------------------------------------------------------------------------
-# Tests: SSE endpoint integration (existing API unchanged)
-# ---------------------------------------------------------------------------
-
+    # ---------------------------------------------------------------------------
+    # Tests: SSE endpoint integration (existing API unchanged)
+    # ---------------------------------------------------------------------------
 
     @pytest.mark.asyncio
     async def test_job_page_invalid_uuid_returns_404(self, client):
         """Non-UUID job_id should return 404 (defense-in-depth)."""
         resp = await client.get("/ui/jobs/not-a-uuid")
         assert resp.status_code == 404
-
 
     """Ensure that Step 8 changes do not break the existing JSON API routes."""
 

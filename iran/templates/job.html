@@ -219,7 +219,7 @@
     }
     if (data.type === 'job.failed') {
       var code = data.error_code || 'internal_error';
-      var msg = errorMessages[code] || data.message || 'خطای ناشناخته';
+      var msg = errorMessages[code] || window.getApiErrorMessage(data.message, 'خطای ناشناخته');
       errorBox.innerHTML = '<div class="alert alert-error">' + msg + '</div>';
     }
     if (data.type === 'job.deleted' || data.status === 'deleted') {
