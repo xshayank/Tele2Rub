@@ -42,6 +42,32 @@ logger = logging.getLogger("kharej.downloaders.youtube")
 _PERCENT_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)\s*%")
 _SPEED_RE = re.compile(r"at\s+([\d.]+\s*\S+/s)")
 
+#: Maximum number of proxy-retry attempts before giving up on a download.
+_MAX_PROXY_RETRIES: int = 3
+
+#: Substrings in a yt-dlp error message that indicate a proxy/network failure
+#: (as opposed to an unavailable video or auth error).
+_PROXY_ERROR_KEYWORDS: tuple[str, ...] = (
+    "proxy",
+    "socks",
+    "connection refused",
+    "connection timed out",
+    "timed out",
+    "cannot connect",
+    "failed to connect",
+    "network is unreachable",
+    "no route to host",
+    "remotedisconnected",
+    "connection reset",
+    "errno",
+)
+
+
+def _is_proxy_error(error_msg: str) -> bool:
+    """Return True if *error_msg* looks like a proxy or network connectivity failure."""
+    lower = error_msg.lower()
+    return any(kw in lower for kw in _PROXY_ERROR_KEYWORDS)
+
 
 def _find_ytdlp(settings: "KharejSettings") -> str:
     """Return the path to the yt-dlp executable."""
@@ -231,66 +257,93 @@ class YoutubeDownloader:
             quality = "mp3"
 
         cookies_path = _resolve_cookies_path(settings)
-
         ytdlp_bin = _find_ytdlp(settings)
-        proxy = proxy_manager.get_proxy()
 
-        with tempfile.TemporaryDirectory(prefix=f"kharej_yt_{job.job_id}_") as tmp_str:
-            tmp_dir = Path(tmp_str)
-            outtmpl = str(tmp_dir / "%(title)s.%(ext)s")
+        last_exc: Exception | None = None
 
-            cmd = _build_command(ytdlp_bin, job.url, outtmpl, quality, cookies_path, proxy)
+        for attempt in range(1, _MAX_PROXY_RETRIES + 1):
+            proxy = proxy_manager.get_proxy()
 
-            logger.info({
-                "event": "youtube.download_start",
-                "job_id": job.job_id,
-                "quality": quality,
-                "cookies": bool(cookies_path),
-                "proxy": proxy,
-            })
+            with tempfile.TemporaryDirectory(prefix=f"kharej_yt_{job.job_id}_") as tmp_str:
+                tmp_dir = Path(tmp_str)
+                outtmpl = str(tmp_dir / "%(title)s.%(ext)s")
 
-            async def _make_progress(percent: int, speed: str | None) -> None:
-                await progress.report_progress(
-                    job.job_id, percent, phase="downloading", speed=speed
-                )
+                cmd = _build_command(ytdlp_bin, job.url, outtmpl, quality, cookies_path, proxy)
 
-            await asyncio.to_thread(
-                _run_ytdlp_subprocess,
-                cmd,
-                job.job_id,
-                loop,
-                _make_progress,
-            )
+                logger.info({
+                    "event": "youtube.download_start",
+                    "job_id": job.job_id,
+                    "quality": quality,
+                    "cookies": bool(cookies_path),
+                    "proxy": proxy,
+                    "attempt": attempt,
+                })
 
-            # Find the downloaded file — prefer most-recently-modified media file
-            _MEDIA_EXTS = {
-                ".mp3", ".m4a", ".flac", ".ogg", ".opus",
-                ".mp4", ".mkv", ".avi", ".mov",
-            }
-            files = [p for p in tmp_dir.iterdir() if p.is_file()]
-            if not files:
-                raise RuntimeError("yt-dlp produced no output file")
-            media_files = [p for p in files if p.suffix.lower() in _MEDIA_EXTS]
-            candidates = media_files or files
-            local_path = max(candidates, key=lambda p: p.stat().st_mtime)
-            ext = local_path.suffix.lstrip(".")
+                async def _make_progress(percent: int, speed: str | None) -> None:
+                    await progress.report_progress(
+                        job.job_id, percent, phase="downloading", speed=speed
+                    )
 
-            stem = safe_filename(local_path.stem)
-            s2_filename = f"{stem}.{ext}" if ext else stem
-            s2_key = make_media_key(job.job_id, s2_filename)
+                try:
+                    await asyncio.to_thread(
+                        _run_ytdlp_subprocess,
+                        cmd,
+                        job.job_id,
+                        loop,
+                        _make_progress,
+                    )
+                except RuntimeError as exc:
+                    last_exc = exc
+                    if proxy and _is_proxy_error(str(exc)):
+                        logger.warning({
+                            "event": "youtube.proxy_failure",
+                            "job_id": job.job_id,
+                            "proxy": proxy,
+                            "attempt": attempt,
+                            "error": str(exc)[:200],
+                        })
+                        proxy_manager.mark_proxy_failed(proxy)
+                        if attempt < _MAX_PROXY_RETRIES:
+                            logger.info({
+                                "event": "youtube.proxy_retry",
+                                "job_id": job.job_id,
+                                "attempt": attempt,
+                            })
+                            continue
+                    raise
 
-            logger.info({
-                "event": "youtube.upload_start",
-                "job_id": job.job_id,
-                "key": s2_key,
-                "size": local_path.stat().st_size,
-            })
-            await progress.report_progress(job.job_id, 100, phase="uploading")
+                # Download succeeded — find output file and upload
+                _MEDIA_EXTS = {
+                    ".mp3", ".m4a", ".flac", ".ogg", ".opus",
+                    ".mp4", ".mkv", ".avi", ".mov",
+                }
+                files = [p for p in tmp_dir.iterdir() if p.is_file()]
+                if not files:
+                    raise RuntimeError("yt-dlp produced no output file")
+                media_files = [p for p in files if p.suffix.lower() in _MEDIA_EXTS]
+                candidates = media_files or files
+                local_path = max(candidates, key=lambda p: p.stat().st_mtime)
+                ext = local_path.suffix.lstrip(".")
 
-            ref: S2ObjectRef = await asyncio.to_thread(s2.upload_file, local_path, s2_key)
-            logger.info({
-                "event": "youtube.upload_done",
-                "job_id": job.job_id,
-                "key": s2_key,
-            })
-            return [ref]
+                stem = safe_filename(local_path.stem)
+                s2_filename = f"{stem}.{ext}" if ext else stem
+                s2_key = make_media_key(job.job_id, s2_filename)
+
+                logger.info({
+                    "event": "youtube.upload_start",
+                    "job_id": job.job_id,
+                    "key": s2_key,
+                    "size": local_path.stat().st_size,
+                })
+                await progress.report_progress(job.job_id, 100, phase="uploading")
+
+                ref: S2ObjectRef = await asyncio.to_thread(s2.upload_file, local_path, s2_key)
+                logger.info({
+                    "event": "youtube.upload_done",
+                    "job_id": job.job_id,
+                    "key": s2_key,
+                })
+                return [ref]
+
+        # All proxy attempts exhausted — re-raise the last exception
+        raise last_exc or RuntimeError("all proxy attempts failed")  # type: ignore[misc]

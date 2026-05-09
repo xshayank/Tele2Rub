@@ -124,14 +124,24 @@ async def _download_spotify_track_locally(
             )
         return None
 
-    async def _try_ytdlp() -> Path | None:
-        """Download via yt-dlp YouTube search. Returns Path or None on failure."""
-        try:
-            import yt_dlp as _yt_dlp  # noqa: PLC0415
+    _PROXY_ERROR_KEYWORDS: tuple[str, ...] = (
+        "proxy", "socks", "connection refused", "timed out",
+        "cannot connect", "failed to connect", "network is unreachable",
+        "no route to host", "remotedisconnected", "connection reset", "errno",
+    )
+    _YTDLP_MAX_PROXY_RETRIES: int = 3
 
-            codec = "flac" if _prefer_lossless else "mp3"
-            quality_str = "0"
-            query = f"ytsearch1:{artist} - {title}" if artist else f"ytsearch1:{title}"
+    async def _try_ytdlp() -> Path | None:
+        """Download via yt-dlp YouTube search with proxy retry. Returns Path or None."""
+        import yt_dlp as _yt_dlp  # noqa: PLC0415
+
+        codec = "flac" if _prefer_lossless else "mp3"
+        quality_str = "0"
+        query = f"ytsearch1:{artist} - {title}" if artist else f"ytsearch1:{title}"
+        ext_glob = "*.flac" if _prefer_lossless else "*.mp3"
+
+        for attempt in range(1, _YTDLP_MAX_PROXY_RETRIES + 1):
+            _proxy = proxy_manager.get_proxy()
             ydl_opts: dict = {
                 "format": "bestaudio/best",
                 "postprocessors": [
@@ -146,37 +156,47 @@ async def _download_spotify_track_locally(
                 "quiet": True,
             }
             ydl_opts["cookiefile"] = "/root/newrube/RubeTunes/kharej/cookies.txt"
-
-            _proxy = proxy_manager.get_proxy()
             if _proxy:
                 ydl_opts["proxy"] = _proxy
 
-            def _run() -> None:
-                with _yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([query])
+            try:
+                def _run(_opts: dict = ydl_opts) -> None:
+                    with _yt_dlp.YoutubeDL(_opts) as ydl:
+                        ydl.download([query])
 
-            await asyncio.to_thread(_run)
-            ext_glob = "*.flac" if _prefer_lossless else "*.mp3"
-            audio_path = next(tmp_dir.glob(ext_glob), None) or next(
-                (
-                    p
-                    for p in tmp_dir.iterdir()
-                    if p.suffix.lower() in {".mp3", ".flac", ".m4a", ".opus", ".ogg"}
-                ),
-                None,
-            )
-            if audio_path is not None:
-                try:
-                    from rubetunes.tagging import embed_metadata  # noqa: PLC0415
+                await asyncio.to_thread(_run)
+                audio_path = next(tmp_dir.glob(ext_glob), None) or next(
+                    (
+                        p
+                        for p in tmp_dir.iterdir()
+                        if p.suffix.lower() in {".mp3", ".flac", ".m4a", ".opus", ".ogg"}
+                    ),
+                    None,
+                )
+                if audio_path is not None:
+                    try:
+                        from rubetunes.tagging import embed_metadata  # noqa: PLC0415
 
-                    embed_metadata(audio_path, info)
-                except Exception as exc:
-                    logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
-                return audio_path
-            logger.warning({"event": "spotify.ytdlp_no_file", "query": query})
-        except Exception as exc:
-            logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
-        return None
+                        embed_metadata(audio_path, info)
+                    except Exception as exc:
+                        logger.warning({"event": "spotify.tag_failed", "error": repr(exc)})
+                    return audio_path
+                logger.warning({"event": "spotify.ytdlp_no_file", "query": query})
+                return None
+            except Exception as exc:
+                err_str = str(exc)
+                is_proxy_err = _proxy and any(kw in err_str.lower() for kw in _PROXY_ERROR_KEYWORDS)
+                if is_proxy_err and attempt < _YTDLP_MAX_PROXY_RETRIES:
+                    logger.warning({
+                        "event": "spotify.ytdlp_proxy_failure",
+                        "proxy": _proxy,
+                        "attempt": attempt,
+                        "error": err_str[:200],
+                    })
+                    proxy_manager.mark_proxy_failed(_proxy)  # type: ignore[arg-type]
+                    continue
+                logger.warning({"event": "spotify.ytdlp_failed", "error": repr(exc)})
+                return None
 
     if _prefer_lossless:
         # FLAC: QobuzMusicClient → KuwoMusicClient → QianqianMusicClient (all via musicdl, no cookies)

@@ -1,24 +1,33 @@
 """SOCKS5 proxy manager for the Kharej VPS worker.
 
-Fetches a list of SOCKS5 proxies from a remote URL, validates them using a
-raw SOCKS5 handshake, and maintains a rotating pool of working proxies.
-A background asyncio task refreshes the pool every hour automatically.
+Fetches SOCKS5 proxy lists from multiple remote URLs, validates them by
+establishing a real SOCKS5 tunnel to YouTube and confirming an HTTP response,
+then maintains a rotating pool of working proxies.  A background asyncio task
+refreshes the pool every 15 minutes automatically.
 
 The module exposes a process-global singleton :data:`proxy_manager` that all
 downloaders should use::
 
     from kharej.proxy_manager import proxy_manager
 
-    proxy_url = proxy_manager.get_proxy()   # "socks5://ip:port" or None
-    await proxy_manager.start()             # begin background refresh
-    await proxy_manager.stop()              # cancel background refresh
+    proxy_url = proxy_manager.get_proxy()       # "socks5://ip:port" or None
+    proxy_manager.mark_proxy_failed(proxy_url)  # evict a bad proxy immediately
+    await proxy_manager.start()                 # begin background refresh
+    await proxy_manager.stop()                  # cancel background refresh
 
 Proxy validation
 ----------------
-Each candidate proxy is tested by attempting a no-authentication SOCKS5
-handshake (RFC 1928) to the Cloudflare resolver at ``1.1.1.1:80``.  Only
-proxies that complete the handshake successfully within
-:data:`_VALIDATE_TIMEOUT` seconds are kept.  Validation runs concurrently
+Each candidate proxy is tested end-to-end:
+
+1. TCP connection to the proxy host/port.
+2. SOCKS5 no-auth greeting (RFC 1928).
+3. SOCKS5 CONNECT to ``youtube.com:80`` using a domain-name address (ATYP 0x03)
+   so the proxy must resolve and reach the real target.
+4. HTTP ``HEAD / HTTP/1.0`` request sent through the established tunnel.
+5. Proxy is accepted only when the response starts with ``HTTP/``.
+
+This ensures every proxy in the pool can actually reach YouTube/media hosts
+before being used for video or music downloads.  Validation runs concurrently
 in a :class:`~concurrent.futures.ThreadPoolExecutor` so it does not block
 the asyncio event loop.
 """
@@ -41,61 +50,110 @@ logger = logging.getLogger("kharej.proxy_manager")
 # Constants
 # ---------------------------------------------------------------------------
 
-#: Remote URL that contains one ``ip:port`` SOCKS5 proxy entry per line.
-_PROXY_LIST_URL: str = (
-    "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main"
-    "/proxies/protocols/socks5/data.txt"
-)
+#: Remote URLs that each contain one ``ip:port`` SOCKS5 proxy entry per line.
+#: All lists are fetched and merged before validation so the pool is as large
+#: as possible.
+_PROXY_LIST_URLS: list[str] = [
+    (
+        "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main"
+        "/proxies/protocols/socks5/data.txt"
+    ),
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/refs/heads/master/socks5.txt",
+]
 
-#: Target used for SOCKS5 handshake validation (Cloudflare DNS resolver).
-_VALIDATE_HOST: str = "1.1.1.1"
+#: Target host used for end-to-end SOCKS5 + HTTP validation.
+#: Using ``youtube.com`` ensures proxies can reach the primary media platform.
+_VALIDATE_HOST_BYTES: bytes = b"youtube.com"
 _VALIDATE_PORT: int = 80
 
 #: Seconds before a validation attempt is considered failed.
-_VALIDATE_TIMEOUT: float = 8.0
+_VALIDATE_TIMEOUT: float = 10.0
 
 #: How many proxies to validate concurrently.
-_VALIDATE_WORKERS: int = 20
+_VALIDATE_WORKERS: int = 50
 
-#: Seconds between automatic proxy list refreshes (1 hour).
-_REFRESH_INTERVAL: float = 3600.0
+#: Seconds between automatic proxy list refreshes (15 minutes).
+_REFRESH_INTERVAL: float = 900.0
 
 #: HTTP request timeout when fetching the remote proxy list (seconds).
 _FETCH_TIMEOUT: float = 20.0
 
 
 # ---------------------------------------------------------------------------
-# Proxy validation
+# Proxy validation helpers
 # ---------------------------------------------------------------------------
 
 
-def _socks5_check(host: str, port: int) -> bool:
-    """Return True if a no-auth SOCKS5 handshake to the validation target succeeds.
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    """Read exactly *n* bytes from *sock*, returning fewer only on EOF."""
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    return buf
 
-    Implements the minimal SOCKS5 handshake (RFC 1928):
-    1. Client → Server: ``\\x05\\x01\\x00`` (SOCKS5, 1 method, no-auth)
-    2. Server → Client: ``\\x05\\x00`` (SOCKS5, accept no-auth)
-    3. Client → Server: CONNECT request to :data:`_VALIDATE_HOST`::data:`_VALIDATE_PORT`
-    4. Server → Client: reply with ``reply[1] == 0x00`` (success)
+
+def _socks5_check(host: str, port: int) -> bool:
+    """Return True if the proxy at *host*:*port* can reach YouTube via HTTP.
+
+    Full end-to-end validation (RFC 1928):
+
+    1. TCP connect to the proxy.
+    2. SOCKS5 no-auth greeting.
+    3. SOCKS5 CONNECT to ``youtube.com:80`` (domain-name ATYP so the proxy
+       must resolve and route to the real host).
+    4. Drain the variable-length CONNECT reply.
+    5. Send ``HEAD / HTTP/1.0`` and verify the response starts with ``HTTP/``.
+
+    Only proxies that pass all five steps are kept in the working pool.
     """
     try:
         with socket.create_connection((host, port), timeout=_VALIDATE_TIMEOUT) as s:
-            # Greeting
+            s.settimeout(_VALIDATE_TIMEOUT)
+
+            # Step 1 – greeting: no-auth only
             s.sendall(b"\x05\x01\x00")
-            resp = s.recv(2)
+            resp = _recv_exact(s, 2)
             if len(resp) < 2 or resp[0] != 0x05 or resp[1] != 0x00:
                 return False
 
-            # CONNECT request: VER=5, CMD=CONNECT, RSV=0, ATYP=IPv4
-            target_ip = socket.inet_aton(_VALIDATE_HOST)
+            # Step 2 – CONNECT using domain name (ATYP=0x03)
+            target = _VALIDATE_HOST_BYTES
             request = (
-                b"\x05\x01\x00\x01"
-                + target_ip
+                b"\x05\x01\x00\x03"
+                + bytes([len(target)])
+                + target
                 + struct.pack("!H", _VALIDATE_PORT)
             )
             s.sendall(request)
-            reply = s.recv(10)
-            return len(reply) >= 2 and reply[1] == 0x00
+
+            # Step 3 – read CONNECT reply header (4 bytes: VER, REP, RSV, ATYP)
+            reply_hdr = _recv_exact(s, 4)
+            if len(reply_hdr) < 4 or reply_hdr[1] != 0x00:
+                return False
+
+            # Step 4 – drain the bound address so the socket is ready for data
+            atyp = reply_hdr[3]
+            if atyp == 0x01:       # IPv4: 4 bytes addr + 2 bytes port
+                _recv_exact(s, 6)
+            elif atyp == 0x03:     # domain: 1 byte len + N bytes + 2 bytes port
+                dlen_buf = _recv_exact(s, 1)
+                if dlen_buf:
+                    _recv_exact(s, dlen_buf[0] + 2)
+            elif atyp == 0x04:     # IPv6: 16 bytes addr + 2 bytes port
+                _recv_exact(s, 18)
+
+            # Step 5 – make a real HTTP request through the tunnel
+            s.sendall(
+                b"HEAD / HTTP/1.0\r\n"
+                b"Host: youtube.com\r\n"
+                b"User-Agent: curl/7.68.0\r\n"
+                b"\r\n"
+            )
+            http_resp = s.recv(16)
+            return http_resp.startswith(b"HTTP/")
     except Exception:
         return False
 
@@ -154,6 +212,25 @@ def _fetch_proxy_list(url: str) -> list[str]:
     return proxies
 
 
+def _fetch_all_proxy_lists(urls: list[str]) -> list[str]:
+    """Fetch and deduplicate proxies from all *urls*."""
+    seen: set[str] = set()
+    combined: list[str] = []
+    for url in urls:
+        for proxy in _fetch_proxy_list(url):
+            if proxy not in seen:
+                seen.add(proxy)
+                combined.append(proxy)
+    logger.info(
+        {
+            "event": "proxy_manager.fetch_all_done",
+            "sources": len(urls),
+            "total_candidates": len(combined),
+        }
+    )
+    return combined
+
+
 def _validate_proxies(proxy_urls: Sequence[str]) -> list[str]:
     """Return only the *proxy_urls* that pass :func:`_socks5_check`."""
     if not proxy_urls:
@@ -190,14 +267,14 @@ def _validate_proxies(proxy_urls: Sequence[str]) -> list[str]:
 
 
 class ProxyManager:
-    """Manage a pool of validated SOCKS5 proxies with hourly auto-refresh.
+    """Manage a pool of validated SOCKS5 proxies with periodic auto-refresh.
 
     The manager is safe to use from multiple threads (downloaders call
     :meth:`get_proxy` from ``asyncio.to_thread`` workers).
     """
 
-    def __init__(self, url: str = _PROXY_LIST_URL) -> None:
-        self._url = url
+    def __init__(self, urls: list[str] | None = None) -> None:
+        self._urls: list[str] = urls if urls is not None else list(_PROXY_LIST_URLS)
         self._lock = threading.Lock()
         self._working: list[str] = []
         self._task: asyncio.Task | None = None
@@ -207,7 +284,7 @@ class ProxyManager:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Fetch and validate the proxy list immediately, then schedule hourly refresh."""
+        """Fetch and validate the proxy list immediately, then schedule periodic refresh."""
         # Initial fetch in a background thread so we don't block the event loop.
         await asyncio.to_thread(self._refresh)
         # Schedule recurring refresh
@@ -236,6 +313,39 @@ class ProxyManager:
                 return None
             return random.choice(self._working)
 
+    def mark_proxy_failed(self, proxy_url: str) -> None:
+        """Evict *proxy_url* from the working pool immediately.
+
+        Call this when a download fails with a proxy-related error so that
+        subsequent requests from other jobs do not reuse the broken proxy.
+        If the pool becomes empty after the eviction, a background refresh is
+        triggered automatically.
+        """
+        with self._lock:
+            try:
+                self._working.remove(proxy_url)
+            except ValueError:
+                return  # already removed, nothing to do
+            remaining = len(self._working)
+
+        logger.warning(
+            {
+                "event": "proxy_manager.proxy_evicted",
+                "proxy": proxy_url,
+                "remaining": remaining,
+            }
+        )
+
+        if remaining == 0:
+            logger.warning(
+                {
+                    "event": "proxy_manager.pool_empty",
+                    "msg": "No working proxies left; triggering background refresh",
+                }
+            )
+            # Fire-and-forget refresh from a thread so we don't block the caller.
+            threading.Thread(target=self._refresh, daemon=True, name="proxy-refresh").start()
+
     def working_count(self) -> int:
         """Return the number of currently validated working proxies."""
         with self._lock:
@@ -247,13 +357,13 @@ class ProxyManager:
 
     def _refresh(self) -> None:
         """Synchronously fetch and validate the proxy list, then update the pool."""
-        logger.info({"event": "proxy_manager.refresh_start", "url": self._url})
-        candidates = _fetch_proxy_list(self._url)
+        logger.info({"event": "proxy_manager.refresh_start", "urls": self._urls})
+        candidates = _fetch_all_proxy_lists(self._urls)
         if not candidates:
             logger.warning(
                 {
                     "event": "proxy_manager.empty_list",
-                    "msg": "Proxy list is empty; keeping existing pool",
+                    "msg": "All proxy lists are empty; keeping existing pool",
                 }
             )
             return
