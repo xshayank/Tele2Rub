@@ -460,6 +460,85 @@ async def test_youtube_downloader_s2_key_uses_safe_filename() -> None:
 
 
 # ===========================================================================
+# YoutubeDownloader.run — proxy retry without active proxy
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_youtube_downloader_no_video_formats_retries_without_proxy() -> None:
+    """'No video formats found' must trigger a retry even when no proxy is in use (proxy=None)."""
+    job = _make_job(quality="mp3")
+    s2 = _make_s2(_DUMMY_REF)
+    progress = _make_progress()
+    settings = _make_settings()
+
+    call_count = 0
+
+    def _fake_subprocess(cmd, job_id, loop, progress_coro_factory):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError(
+                "yt-dlp exited with non-zero status 1:\n"
+                "ERROR: [youtube] jwH8AYuwDIQ: No video formats found!"
+            )
+        # Second attempt succeeds: write a fake mp3 file.
+        idx = cmd.index("--output")
+        out_dir = Path(cmd[idx + 1]).parent
+        (out_dir / "track.mp3").write_bytes(b"\x00" * 64)
+
+    with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
+         patch("kharej.downloaders.youtube.proxy_manager") as mock_pm, \
+         patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
+        # Return None for proxy so the first attempt runs without a proxy.
+        mock_pm.get_proxy.return_value = None
+        downloader = YoutubeDownloader()
+        refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
+
+    assert len(refs) == 1
+    # mark_proxy_failed must be called (it is a no-op for None, but must be invoked).
+    mock_pm.mark_proxy_failed.assert_called()
+    # Two subprocess attempts were made (first failed, second succeeded).
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_youtube_downloader_no_video_formats_marks_proxy_failed() -> None:
+    """'No video formats found' must mark the active proxy as failed and retry."""
+    job = _make_job(quality="mp3")
+    s2 = _make_s2(_DUMMY_REF)
+    progress = _make_progress()
+    settings = _make_settings()
+
+    call_count = 0
+
+    def _fake_subprocess(cmd, job_id, loop, progress_coro_factory):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError(
+                "yt-dlp exited with non-zero status 1:\n"
+                "ERROR: [youtube] jwH8AYuwDIQ: No video formats found!"
+            )
+        idx = cmd.index("--output")
+        out_dir = Path(cmd[idx + 1]).parent
+        (out_dir / "track.mp3").write_bytes(b"\x00" * 64)
+
+    _PROXY_URL = "http://1.2.3.4:8080"
+
+    with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
+         patch("kharej.downloaders.youtube.proxy_manager") as mock_pm, \
+         patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
+        mock_pm.get_proxy.return_value = _PROXY_URL
+        downloader = YoutubeDownloader()
+        refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
+
+    assert len(refs) == 1
+    mock_pm.mark_proxy_failed.assert_called_with(_PROXY_URL)
+    assert call_count == 2
+
+
+# ===========================================================================
 # SpotifyDownloader.run
 # ===========================================================================
 

@@ -399,7 +399,7 @@ class YoutubeDownloader:
                     )
                 except RuntimeError as exc:
                     last_exc = exc
-                    if proxy and _is_proxy_error(str(exc)):
+                    if _is_proxy_error(str(exc)):
                         logger.warning({
                             "event": "youtube.proxy_failure",
                             "job_id": job.job_id,
@@ -407,7 +407,7 @@ class YoutubeDownloader:
                             "attempt": attempt,
                             "error": str(exc)[:200],
                         })
-                        proxy_manager.mark_proxy_failed(proxy)
+                        proxy_manager.mark_proxy_failed(proxy)  # no-op when proxy is None
                         if attempt < _MAX_PROXY_RETRIES:
                             logger.info({
                                 "event": "youtube.proxy_retry",
