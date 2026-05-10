@@ -491,11 +491,13 @@ async def test_youtube_downloader_no_video_formats_retries_without_proxy() -> No
          patch("kharej.downloaders.youtube.proxy_manager") as mock_pm, \
          patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
         # Return None for proxy so the first attempt runs without a proxy.
-        mock_pm.get_proxy.return_value = None
+        mock_pm.scan_and_get_proxy = AsyncMock(return_value=None)
         downloader = YoutubeDownloader()
         refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
     assert len(refs) == 1
+    # scan_and_get_proxy must be called (triggers a proxy scan when pool is empty).
+    mock_pm.scan_and_get_proxy.assert_called()
     # mark_proxy_failed must be called (it is a no-op for None, but must be invoked).
     mock_pm.mark_proxy_failed.assert_called()
     # Two subprocess attempts were made (first failed, second succeeded).
@@ -529,11 +531,13 @@ async def test_youtube_downloader_no_video_formats_marks_proxy_failed() -> None:
     with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
          patch("kharej.downloaders.youtube.proxy_manager") as mock_pm, \
          patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
-        mock_pm.get_proxy.return_value = _PROXY_URL
+        mock_pm.scan_and_get_proxy = AsyncMock(return_value=_PROXY_URL)
         downloader = YoutubeDownloader()
         refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
     assert len(refs) == 1
+    # scan_and_get_proxy must be called to fetch proxies (or trigger a scan if pool is empty).
+    mock_pm.scan_and_get_proxy.assert_called()
     mock_pm.mark_proxy_failed.assert_called_with(_PROXY_URL)
     assert call_count == 2
 

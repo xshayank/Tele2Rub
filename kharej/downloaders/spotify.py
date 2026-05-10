@@ -91,7 +91,7 @@ async def _download_spotify_track_locally(
         try:
             from rubetunes.providers.musicdl.client import MusicdlClient  # noqa: PLC0415
 
-            _proxy = proxy_manager.get_proxy()
+            _proxy = await proxy_manager.scan_and_get_proxy()
             client = MusicdlClient(sources=[source_name], proxy=_proxy)
             musicdl_query = f"{artist} - {title}" if artist else title
             search_result = await client.search(musicdl_query, sources=[source_name], limit=3)
@@ -144,7 +144,7 @@ async def _download_spotify_track_locally(
         ext_glob = "*.flac" if _prefer_lossless else "*.mp3"
 
         for attempt in range(1, _YTDLP_MAX_PROXY_RETRIES + 1):
-            _proxy = proxy_manager.get_proxy()
+            _proxy = await proxy_manager.scan_and_get_proxy()
             ydl_opts: dict = {
                 "format": "bestaudio/best",
                 "postprocessors": [

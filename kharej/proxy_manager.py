@@ -751,6 +751,33 @@ class ProxyManager:
         with self._lock:
             return len(self._working)
 
+    async def scan_and_get_proxy(self) -> str | None:
+        """Return a working proxy URL, scanning for new ones if the pool is empty.
+
+        If the pool already has valid proxies, one is returned immediately (no
+        scan overhead).  If the pool is empty, an immediate proxy refresh scan
+        is triggered in a background thread; a proxy from the newly populated
+        pool is returned, or ``None`` when the scan also finds no working
+        proxies.
+
+        This method is intended for use in downloaders that should trigger a
+        fresh proxy scan rather than silently proceeding without a proxy when
+        the pool has been exhausted.
+        """
+        proxy = self.get_proxy()
+        if proxy is not None:
+            return proxy
+
+        logger.info(
+            {
+                "event": "proxy_manager.scan_triggered",
+                "reason": "pool_empty",
+                "msg": "Proxy pool is empty; running immediate scan before download",
+            }
+        )
+        await asyncio.to_thread(self._refresh)
+        return self.get_proxy()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -768,6 +795,14 @@ class ProxyManager:
             )
             return
         working_with_speeds = _validate_proxies(candidates)
+        if not working_with_speeds:
+            logger.warning(
+                {
+                    "event": "proxy_manager.no_valid_proxies",
+                    "msg": "Validation found no working proxies; keeping existing pool",
+                }
+            )
+            return
         now = time.time()
         with self._lock:
             old_records = self._proxy_records
