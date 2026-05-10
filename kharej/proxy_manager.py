@@ -3,10 +3,10 @@
 Fetches HTTP proxy lists from multiple sources via :pypi:`pyfreeproxy`
 (CharlesPikachu/freeproxy), validates them by measuring actual download
 throughput through each proxy, then maintains a rotating pool of working
-proxies.  A background asyncio task evicts expired proxies every minute and
-performs a full refresh every 15 minutes automatically.  Validated proxies are
-persisted to disk so the pool is available immediately after a process restart
-without waiting for the first full refresh cycle.
+proxies.  A background asyncio task performs a full refresh every 15 minutes
+automatically.  Validated proxies are persisted to disk so the pool is
+available immediately after a process restart without waiting for the first
+full refresh cycle.
 
 The module exposes a process-global singleton :data:`proxy_manager` that all
 downloaders should use::
@@ -47,13 +47,14 @@ Validation runs concurrently in a
 :class:`~concurrent.futures.ThreadPoolExecutor` so it does not block the
 asyncio event loop.
 
-Proxy lifetime (TTL)
---------------------
-Every validated proxy is stamped with the time it was found.  Proxies older
-than :data:`_PROXY_TTL_SECONDS` (20 minutes) are automatically evicted from
-the working pool.  The background loop checks for expired proxies every
-:data:`_EXPIRY_CHECK_INTERVAL` seconds (1 minute) and triggers an immediate
-full refresh when the pool becomes empty due to expiry.
+Proxy pool refresh
+------------------
+The working proxy pool is replaced wholesale on every refresh cycle (every
+:data:`_REFRESH_INTERVAL` seconds, default 15 minutes).  Proxies do **not**
+expire on a fixed timer; they remain available until the next refresh replaces
+them.  When the pool becomes empty due to failures :meth:`scan_and_get_proxy`
+runs an immediate on-demand refresh so that the waiting download always gets a
+fresh proxy without a second concurrent scan competing for resources.
 
 Proxy scoring
 -------------
@@ -167,14 +168,6 @@ _INSTANT_RESPONSE_SPEED_MULTIPLIER: float = 10.0
 
 #: Seconds between automatic proxy list refreshes (15 minutes).
 _REFRESH_INTERVAL: float = 900.0
-
-#: Seconds a validated proxy remains in the working pool before it expires.
-#: After this lifetime the proxy is evicted; the pool is replenished on the
-#: next scheduled refresh (or immediately when the pool becomes empty).
-_PROXY_TTL_SECONDS: float = 20 * 60  # 20 minutes
-
-#: How often the background loop checks for and evicts expired proxies.
-_EXPIRY_CHECK_INTERVAL: float = 60.0  # every minute
 
 #: Path to the disk cache that persists validated proxies across restarts.
 _PROXY_CACHE_FILE: Path = Path(__file__).parent / "state" / "proxies.json"
@@ -574,22 +567,21 @@ class ProxyManager:
     number of confirmed successful downloads, and how many validation cycles it
     has survived.  :meth:`get_proxy` performs *weighted random* selection so
     that higher-scoring proxies are chosen more often.
+
+    Proxies are **not** expired on a fixed timer.  The entire pool is replaced
+    wholesale on each periodic refresh (every :data:`_REFRESH_INTERVAL`
+    seconds) or on an immediate on-demand refresh triggered by
+    :meth:`scan_and_get_proxy` when the pool is found to be empty.
     """
 
     def __init__(self, sources: list[str] | None = None, cache_file: Path | None = None) -> None:
         self._sources: list[str] = sources if sources is not None else list(_FREEPROXY_SOURCES)
         self._cache_file: Path = cache_file or _PROXY_CACHE_FILE
         self._lock = threading.Lock()
-        # Per-proxy validation timestamps.  Proxies older than _PROXY_TTL_SECONDS are evicted.
-        self._proxy_timestamps: dict[str, float] = {}
         # Per-proxy score records (speed, successes, scan passes).
         self._proxy_records: dict[str, _ProxyRecord] = {}
         # Pre-populate from disk so requests succeed immediately after restart.
-        # Cached proxies are granted a fresh TTL because start() always triggers
-        # an immediate full refresh that will validate and re-stamp them before
-        # the 20-minute window elapses.
         cached_records = _load_proxy_cache(self._cache_file)
-        now = time.time()
         # Sort cached proxies by their stored composite weight so the best
         # proxies are at the front of the working list right from startup.
         self._working: list[str] = sorted(
@@ -598,8 +590,6 @@ class ProxyManager:
             reverse=True,
         )
         self._proxy_records = cached_records
-        for proxy in self._working:
-            self._proxy_timestamps[proxy] = now
         if self._working:
             logger.info(
                 {
@@ -636,13 +626,6 @@ class ProxyManager:
     # Public API
     # ------------------------------------------------------------------
 
-    def _live_proxies(self, proxies: list[str], now: float) -> list[str]:
-        """Return *proxies* that have not yet exceeded :data:`_PROXY_TTL_SECONDS`.
-
-        Must be called with :attr:`_lock` held (or on a private list copy).
-        """
-        return [p for p in proxies if now - self._proxy_timestamps.get(p, 0.0) <= _PROXY_TTL_SECONDS]
-
     def get_proxy(self) -> str | None:
         """Return a working ``http://host:port`` proxy URL chosen by weighted random, or ``None``.
 
@@ -651,25 +634,20 @@ class ProxyManager:
         the top :data:`_TOP_PROXY_COUNT` candidates (or all available proxies
         when the pool is smaller).  Higher-scoring proxies are therefore chosen
         more often while every working proxy retains some chance of selection.
-
-        Proxies that have exceeded :data:`_PROXY_TTL_SECONDS` since they were
-        validated are treated as expired and excluded from the selection.
         """
-        now = time.time()
         with self._lock:
-            valid = self._live_proxies(self._working, now)
-            if not valid:
+            if not self._working:
                 return None
             # Re-rank by current composite weight so that success-counter changes
             # made between refreshes are reflected in the top-N selection, rather
             # than relying on the ordering established at the last refresh.
-            valid.sort(
+            self._working.sort(
                 key=lambda u: _compute_proxy_weight(
                     self._proxy_records.get(u, _ProxyRecord(speed_bps=_MIN_SPEED_BPS))
                 ),
                 reverse=True,
             )
-            pool = valid[:_TOP_PROXY_COUNT]
+            pool = self._working[:_TOP_PROXY_COUNT]
             weights = [
                 # Every proxy in _working always has a corresponding record.
                 # The .get() fallback is a defensive guard against any transient
@@ -714,8 +692,8 @@ class ProxyManager:
         Call this when a download fails with a proxy-related error so that
         subsequent requests from other jobs do not reuse the broken proxy.
         If *proxy_url* is ``None`` the call is a no-op.
-        If the pool becomes empty after the eviction, a background refresh is
-        triggered automatically.
+        When the pool becomes empty after the eviction, the next call to
+        :meth:`scan_and_get_proxy` will trigger a fresh on-demand refresh.
         """
         if proxy_url is None:
             return
@@ -724,7 +702,6 @@ class ProxyManager:
                 self._working.remove(proxy_url)
             except ValueError:
                 return  # already removed, nothing to do
-            self._proxy_timestamps.pop(proxy_url, None)
             self._proxy_records.pop(proxy_url, None)
             remaining = len(self._working)
 
@@ -740,11 +717,9 @@ class ProxyManager:
             logger.warning(
                 {
                     "event": "proxy_manager.pool_empty",
-                    "msg": "No working proxies left; triggering background refresh",
+                    "msg": "No working proxies left; next scan_and_get_proxy call will refresh",
                 }
             )
-            # Fire-and-forget refresh from a thread so we don't block the caller.
-            threading.Thread(target=self._refresh, daemon=True, name="proxy-refresh").start()
 
     def working_count(self) -> int:
         """Return the number of currently validated working proxies."""
@@ -783,7 +758,7 @@ class ProxyManager:
     # ------------------------------------------------------------------
 
     def _refresh(self) -> None:
-        """Synchronously fetch and validate the proxy list, then update the pool."""
+        """Synchronously fetch and validate the proxy list, then replace the pool."""
         logger.info({"event": "proxy_manager.refresh_start", "sources": self._sources})
         candidates = _fetch_all_proxy_lists(self._sources)
         if not candidates:
@@ -803,7 +778,6 @@ class ProxyManager:
                 }
             )
             return
-        now = time.time()
         with self._lock:
             old_records = self._proxy_records
             new_records: dict[str, _ProxyRecord] = {}
@@ -827,9 +801,6 @@ class ProxyManager:
             )
             self._working = working
             self._proxy_records = new_records
-            # Stamp every freshly validated proxy with the current time so the
-            # 20-minute lifetime clock starts from now.
-            self._proxy_timestamps = {proxy: now for proxy in working}
         # Persist to disk so the pool (including score records) survives a
         # process restart.
         try:
@@ -845,61 +816,15 @@ class ProxyManager:
             {
                 "event": "proxy_manager.refresh_done",
                 "working": len(working),
-                "ttl_seconds": _PROXY_TTL_SECONDS,
             }
         )
 
-    def _evict_expired(self) -> tuple[int, int]:
-        """Remove proxies that have exceeded :data:`_PROXY_TTL_SECONDS` from the pool.
-
-        Returns a ``(evicted, remaining)`` tuple.  Callers should trigger a
-        background refresh when *remaining* reaches zero.
-
-        Note: if a previous refresh already left the pool empty, subsequent
-        calls will return ``(0, 0)`` and the periodic 15-minute refresh cadence
-        will handle replenishment — no extra retry loop is needed.
-        """
-        now = time.time()
-        with self._lock:
-            before = len(self._working)
-            self._working = self._live_proxies(self._working, now)
-            evicted = before - len(self._working)
-            if evicted:
-                current = set(self._working)
-                self._proxy_timestamps = {k: v for k, v in self._proxy_timestamps.items() if k in current}
-                self._proxy_records = {k: v for k, v in self._proxy_records.items() if k in current}
-            remaining = len(self._working)
-        return evicted, remaining
-
     async def _refresh_loop(self) -> None:
-        """Background task: evict expired proxies every minute and refresh every 15 minutes."""
-        last_refresh = time.monotonic()
+        """Background task: replace the proxy pool every 15 minutes."""
         while True:
-            await asyncio.sleep(_EXPIRY_CHECK_INTERVAL)
+            await asyncio.sleep(_REFRESH_INTERVAL)
             try:
-                evicted, remaining = await asyncio.to_thread(self._evict_expired)
-                if evicted:
-                    logger.info(
-                        {
-                            "event": "proxy_manager.proxies_expired",
-                            "evicted": evicted,
-                            "remaining": remaining,
-                        }
-                    )
-                    if remaining == 0:
-                        logger.warning(
-                            {
-                                "event": "proxy_manager.pool_empty_after_expiry",
-                                "msg": "All proxies expired; triggering immediate refresh",
-                            }
-                        )
-                        await asyncio.to_thread(self._refresh)
-                        last_refresh = time.monotonic()
-
-                # Full refresh on the normal 15-minute cadence.
-                if time.monotonic() - last_refresh >= _REFRESH_INTERVAL:
-                    await asyncio.to_thread(self._refresh)
-                    last_refresh = time.monotonic()
+                await asyncio.to_thread(self._refresh)
             except Exception as exc:
                 logger.warning(
                     {
