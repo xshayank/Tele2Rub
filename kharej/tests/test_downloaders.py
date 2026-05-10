@@ -496,6 +496,8 @@ async def test_youtube_downloader_no_video_formats_retries_without_proxy() -> No
         refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
     assert len(refs) == 1
+    # scan_and_get_proxy must be called (triggers a proxy scan when pool is empty).
+    mock_pm.scan_and_get_proxy.assert_called()
     # mark_proxy_failed must be called (it is a no-op for None, but must be invoked).
     mock_pm.mark_proxy_failed.assert_called()
     # Two subprocess attempts were made (first failed, second succeeded).
@@ -534,6 +536,8 @@ async def test_youtube_downloader_no_video_formats_marks_proxy_failed() -> None:
         refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
     assert len(refs) == 1
+    # scan_and_get_proxy must be called to fetch proxies (or trigger a scan if pool is empty).
+    mock_pm.scan_and_get_proxy.assert_called()
     mock_pm.mark_proxy_failed.assert_called_with(_PROXY_URL)
     assert call_count == 2
 
