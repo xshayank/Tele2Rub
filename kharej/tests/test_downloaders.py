@@ -491,7 +491,7 @@ async def test_youtube_downloader_no_video_formats_retries_without_proxy() -> No
          patch("kharej.downloaders.youtube.proxy_manager") as mock_pm, \
          patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
         # Return None for proxy so the first attempt runs without a proxy.
-        mock_pm.get_proxy.return_value = None
+        mock_pm.scan_and_get_proxy = AsyncMock(return_value=None)
         downloader = YoutubeDownloader()
         refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
 
@@ -529,7 +529,7 @@ async def test_youtube_downloader_no_video_formats_marks_proxy_failed() -> None:
     with patch("kharej.downloaders.youtube._find_ytdlp", return_value="/usr/bin/yt-dlp"), \
          patch("kharej.downloaders.youtube.proxy_manager") as mock_pm, \
          patch("kharej.downloaders.youtube._run_ytdlp_subprocess", side_effect=_fake_subprocess):
-        mock_pm.get_proxy.return_value = _PROXY_URL
+        mock_pm.scan_and_get_proxy = AsyncMock(return_value=_PROXY_URL)
         downloader = YoutubeDownloader()
         refs = await downloader.run(job, s2=s2, progress=progress, settings=settings)
 

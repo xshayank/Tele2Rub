@@ -367,7 +367,7 @@ class YoutubeDownloader:
         last_exc: Exception | None = None
 
         for attempt in range(1, _MAX_PROXY_RETRIES + 1):
-            proxy = proxy_manager.get_proxy()
+            proxy = await proxy_manager.scan_and_get_proxy()
 
             with tempfile.TemporaryDirectory(prefix=f"kharej_yt_{job.job_id}_") as tmp_str:
                 tmp_dir = Path(tmp_str)

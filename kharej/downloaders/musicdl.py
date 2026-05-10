@@ -85,7 +85,7 @@ class MusicdlDownloader:
         await progress.report_progress(job.job_id, 0, phase="downloading")
 
         try:
-            client = MusicdlClient(sources=sources, proxy=proxy_manager.get_proxy())
+            client = MusicdlClient(sources=sources, proxy=await proxy_manager.scan_and_get_proxy())
         except MusicdlNotInstalledError as exc:
             raise RuntimeError(
                 "musicdl Python package is not installed; install musicdl to use this platform"
