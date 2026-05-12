@@ -13,9 +13,15 @@ MUSICDL_DOWNLOAD_DIR
 MUSICDL_DEFAULT_SOURCES
     Comma-separated list of musicdl source client names.
     Defaults to the upstream DEFAULT_MUSIC_SOURCES list.
+MUSICDL_USE_PROXY
+    Set to ``1``, ``true``, ``yes``, or ``on`` (case-insensitive) to enable
+    automatic proxy selection via the Kharej proxy manager for musicdl
+    requests.  Defaults to ``false`` (no proxy).
 MUSICDL_PROXY
-    Optional HTTP/HTTPS proxy URL applied to all musicdl requests
-    (e.g. ``http://user:pass@host:port``).
+    Optional HTTP/HTTPS proxy URL applied to all musicdl requests when
+    ``MUSICDL_USE_PROXY`` is enabled and no proxy is available from the pool
+    (e.g. ``http://user:pass@host:port``).  Has no effect when
+    ``MUSICDL_USE_PROXY`` is disabled.
 MUSICDL_MAX_RETRIES
     Per-request retry count for every musicdl source.  Defaults to ``1``
     (lower than musicdl's upstream default of 3 for faster failover).
@@ -37,6 +43,7 @@ log = logging.getLogger(__name__)
 __all__ = [
     "MUSICDL_DOWNLOAD_DIR",
     "MUSICDL_DEFAULT_SOURCES",
+    "MUSICDL_USE_PROXY",
     "MUSICDL_PROXY",
     "MUSICDL_MAX_RETRIES",
     "MUSICDL_CONNECT_TIMEOUT",
@@ -118,6 +125,11 @@ MUSICDL_DEFAULT_SOURCES: list[str] = (
 """Empty list means: use musicdl's own DEFAULT_MUSIC_SOURCES."""
 
 MUSICDL_PROXY: str | None = os.getenv("MUSICDL_PROXY", "").strip() or None
+
+_raw_use_proxy = os.getenv("MUSICDL_USE_PROXY", "").strip().lower()
+MUSICDL_USE_PROXY: bool = _raw_use_proxy in {"1", "true", "yes", "on"}
+"""When True the Kharej proxy manager is consulted before each musicdl request.
+Defaults to False (no proxy)."""
 
 MUSICDL_MAX_RETRIES: int = _parse_positive_int("MUSICDL_MAX_RETRIES", 1)
 """Per-request retry count for every musicdl source (default: 1)."""
