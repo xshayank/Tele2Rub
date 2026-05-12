@@ -479,3 +479,36 @@ class TestPublicExports:
 
         for name in mdl.__all__:
             assert hasattr(mdl, name), f"Missing export: {name}"
+
+
+# ===========================================================================
+# 8. MUSICDL_USE_PROXY — proxy is optional, default is no proxy
+# ===========================================================================
+
+
+class TestUseProxyConfig:
+    def test_use_proxy_defaults_to_false(self, monkeypatch):
+        """MUSICDL_USE_PROXY is False when the env var is absent."""
+        import importlib
+
+        monkeypatch.delenv("MUSICDL_USE_PROXY", raising=False)
+        import rubetunes.providers.musicdl.config as cfg_module
+
+        importlib.reload(cfg_module)
+        assert cfg_module.MUSICDL_USE_PROXY is False
+
+    def test_use_proxy_exported_in_all(self):
+        """MUSICDL_USE_PROXY must appear in the module's __all__."""
+        import rubetunes.providers.musicdl.config as cfg_module
+
+        assert "MUSICDL_USE_PROXY" in cfg_module.__all__
+
+    @pytest.mark.parametrize("truthy", ["1", "true", "yes", "on"])
+    def test_use_proxy_true_when_set(self, monkeypatch, truthy):
+        import importlib
+
+        monkeypatch.setenv("MUSICDL_USE_PROXY", truthy)
+        import rubetunes.providers.musicdl.config as cfg_module
+
+        importlib.reload(cfg_module)
+        assert cfg_module.MUSICDL_USE_PROXY is True

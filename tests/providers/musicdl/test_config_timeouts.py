@@ -184,3 +184,25 @@ class TestBuildRequestsOverrides:
         monkeypatch.setattr(cfg_module, "MUSICDL_PROXY", None)
         overrides = cfg_module.build_requests_overrides()
         assert overrides["timeout"] == (2.0, 60.0)
+
+
+# ---------------------------------------------------------------------------
+# MUSICDL_USE_PROXY default and opt-in
+# ---------------------------------------------------------------------------
+
+
+class TestUseProxy:
+    @pytest.mark.parametrize("env_val", [None, "", "0", "false", "no", "off"])
+    def test_use_proxy_default_and_falsy_values(self, monkeypatch, env_val):
+        if env_val is None:
+            monkeypatch.delenv("MUSICDL_USE_PROXY", raising=False)
+        else:
+            monkeypatch.setenv("MUSICDL_USE_PROXY", env_val)
+        cfg = _reload_config()
+        assert cfg.MUSICDL_USE_PROXY is False
+
+    @pytest.mark.parametrize("env_val", ["1", "true", "True", "TRUE", "yes", "on"])
+    def test_use_proxy_truthy_values(self, monkeypatch, env_val):
+        monkeypatch.setenv("MUSICDL_USE_PROXY", env_val)
+        cfg = _reload_config()
+        assert cfg.MUSICDL_USE_PROXY is True
