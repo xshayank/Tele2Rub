@@ -70,6 +70,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 _ALGORITHM = "HS256"
 _REFRESH_COOKIE = "refresh_token"
+_ACCESS_COOKIE = "access_token"
 
 
 def _secret_key() -> str:
@@ -78,12 +79,29 @@ def _secret_key() -> str:
 
     key = get_settings().SECRET_KEY
     if not key:
-        # Fallback for tests that don't set IRAN_SECRET_KEY; generate once.
-        key = os.environ.get("_IRAN_JWT_FALLBACK_KEY", "")
-        if not key:
-            key = os.urandom(32).hex()
-            os.environ["_IRAN_JWT_FALLBACK_KEY"] = key
+        if get_settings().ENVIRONMENT != "test" and not os.environ.get("PYTEST_CURRENT_TEST"):
+            raise RuntimeError("IRAN_SECRET_KEY must be set to a strong random value")
+        key = os.environ.setdefault("_IRAN_JWT_FALLBACK_KEY", os.urandom(32).hex())
     return key
+
+
+def set_access_token_cookie(response: Response, token: str) -> None:
+    """Set a short-lived HttpOnly access-token cookie for browser clients."""
+    from iran.config import get_settings
+
+    response.set_cookie(
+        key=_ACCESS_COOKIE,
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=get_settings().ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+
+
+def clear_access_token_cookie(response: Response) -> None:
+    response.delete_cookie(key=_ACCESS_COOKIE, path="/")
 
 
 def create_access_token(
@@ -209,6 +227,19 @@ async def _record_login_failure(
     await session.flush()
 
 
+async def _check_registration_rate_limit(session: AsyncSession, ip_addr: str) -> None:
+    window_start = _utcnow() - timedelta(minutes=60)
+    result = await session.execute(
+        select(func.count(AuditLog.id)).where(
+            AuditLog.action == "auth.register",
+            AuditLog.ip_addr == ip_addr,
+            AuditLog.created_at >= window_start,
+        )
+    )
+    if result.scalar_one() >= 5:
+        raise HTTPException(status_code=429, detail="Too many registrations. Try again later.")
+
+
 # ---------------------------------------------------------------------------
 # Pydantic schemas
 # ---------------------------------------------------------------------------
@@ -269,6 +300,7 @@ class RefreshResponse(BaseModel):
 )
 async def register(
     body: RegisterRequest,
+    request: Request,
     session: AsyncSession = Depends(get_db),
 ) -> RegisterResponse:
     """Create a new user with ``status=pending_approval``.
@@ -313,6 +345,7 @@ async def register(
         action="auth.register",
         target_id=user_id,
         payload={"email": body.email, "display_name": body.display_name},
+        ip_addr=ip_addr,
     )
     session.add(audit)
     await session.flush()
@@ -378,6 +411,7 @@ async def login(
     # Issue tokens
     settings = get_settings()
     access_token = create_access_token(user.id, user.role, user.status)
+    set_access_token_cookie(response, access_token)
     raw_refresh = await _create_refresh_token_record(
         session, user.id, settings.REFRESH_TOKEN_EXPIRE_DAYS
     )
@@ -474,6 +508,7 @@ async def refresh(
         session, user.id, settings.REFRESH_TOKEN_EXPIRE_DAYS
     )
     access_token = create_access_token(user.id, user.role, user.status)
+    set_access_token_cookie(response, access_token)
 
     response.set_cookie(
         key=_REFRESH_COOKIE,
@@ -521,6 +556,7 @@ async def logout(
 
     # Clear the cookie
     response.delete_cookie(key=_REFRESH_COOKIE, path="/auth")
+    clear_access_token_cookie(response)
 
     # Audit
     session.add(
@@ -588,3 +624,6 @@ async def get_me(
         "quota_used": quota_used,
         "jobs_remaining": jobs_remaining,
     }
+    ip_addr = request.client.host if request.client else "unknown"
+    await _check_registration_rate_limit(session, ip_addr)
+    body.email = body.email.lower()

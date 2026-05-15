@@ -22,7 +22,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from iran.api.admin import router as admin_router
@@ -443,6 +444,8 @@ def create_app(settings: IranSettings | None = None) -> FastAPI:
     """
     if settings is None:
         settings = get_settings()
+    if settings.ENVIRONMENT != "test" and not settings.SECRET_KEY:
+        raise RuntimeError("IRAN_SECRET_KEY must be set before starting the Iran service")
 
     app = FastAPI(
         title="RubeTunes Iran Service",
@@ -452,9 +455,25 @@ def create_app(settings: IranSettings | None = None) -> FastAPI:
         ),
         version="0.1.0",
         lifespan=_lifespan,
-        docs_url="/docs",
-        redoc_url="/redoc",
+        docs_url="/docs" if settings.ENABLE_API_DOCS else None,
+        redoc_url="/redoc" if settings.ENABLE_API_DOCS else None,
+        openapi_url="/openapi.json" if settings.ENABLE_API_DOCS else None,
     )
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next: Any) -> Response:
+        response = await call_next(request)
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+        )
+        return response
 
     # Store settings on app state so endpoints and lifespan can access them.
     app.state.settings = settings

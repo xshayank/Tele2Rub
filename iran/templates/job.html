@@ -255,7 +255,7 @@
   function startSSE() {
     _sseActive = true;
     var url = '/jobs/' + JOB_ID + '/events';
-    var es = new EventSource(url + '?token=' + encodeURIComponent(window.getToken()));
+    var es = new EventSource(url);
     es.onmessage = function(e) {
       try {
         var data = JSON.parse(e.data);

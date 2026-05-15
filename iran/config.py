@@ -45,6 +45,8 @@ class IranSettings(BaseSettings):
     # ------------------------------------------------------------------
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"  # "json" | "text"
+    ENVIRONMENT: str = "production"  # "production" | "development" | "test"
+    ENABLE_API_DOCS: bool = False
 
     # ------------------------------------------------------------------
     # Security (filled in Step 4)

@@ -92,6 +92,38 @@ class ClearcacheRequest(BaseModel):
     target: str = "all"  # "lru" | "isrc" | "all"
 
 
+ALLOWED_SETTING_TYPES: dict[str, type] = {
+    "MAX_JOBS_PER_HOUR": int,
+    "MAX_CONCURRENT_JOBS": int,
+}
+
+SENSITIVE_SETTING_MARKERS = ("SECRET", "TOKEN", "PASSWORD", "COOKIE", "KEY", "SESSION", "DSN")
+MAX_COOKIES_UPLOAD_BYTES = 1_048_576
+
+
+def _redact_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: "<redacted>" if any(marker in key.upper() for marker in SENSITIVE_SETTING_MARKERS) else value
+        for key, value in settings.items()
+    }
+
+
+def _validate_settings_update(settings: dict[str, Any]) -> dict[str, str]:
+    validated: dict[str, str] = {}
+    for key, value in settings.items():
+        expected_type = ALLOWED_SETTING_TYPES.get(key)
+        if expected_type is None:
+            raise HTTPException(status_code=422, detail=f"Unsupported setting: {key}")
+        try:
+            parsed = expected_type(value)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid value for {key}") from exc
+        if isinstance(parsed, int) and parsed < 0:
+            raise HTTPException(status_code=422, detail=f"{key} must be >= 0")
+        validated[key] = str(parsed)
+    return validated
+
+
 # ---------------------------------------------------------------------------
 # Helper: send message via rubika_client on app.state
 # ---------------------------------------------------------------------------
@@ -604,10 +636,10 @@ async def get_settings(
     return {
         "settings": {
             r.key: {
-                "value": r.value,
+                "value": "<redacted>" if any(marker in r.key.upper() for marker in SENSITIVE_SETTING_MARKERS) else r.value,
                 "updated_at": r.updated_at.isoformat() if r.updated_at else None,
             }
-            for r in rows
+            for r in rows if r.key in ALLOWED_SETTING_TYPES
         }
     }
 
@@ -626,8 +658,8 @@ async def update_settings(
 ) -> dict:
     """Persist settings to DB and send ``AdminSettingsUpdate`` to the Kharej Worker."""
     now = datetime.now(tz=timezone.utc)
-    for key, value in body.settings.items():
-        str_value = str(value)
+    validated = _validate_settings_update(body.settings)
+    for key, str_value in validated.items():
         existing = await session.get(Setting, key)
         if existing is None:
             session.add(Setting(key=key, value=str_value, updated_at=now))
@@ -636,9 +668,9 @@ async def update_settings(
             existing.updated_at = now
 
     rubika = _rubika(request)
-    msg = AdminSettingsUpdate(ts=now, job_id=None, settings=body.settings)
+    msg = AdminSettingsUpdate(ts=now, job_id=None, settings=validated)
     await rubika.send(msg)
-    _audit(session, admin.id, "admin.settings.update", None, payload={"settings": body.settings})
+    _audit(session, admin.id, "admin.settings.update", None, payload={"settings": _redact_settings(validated)})
 
     return {"status": "ok", "sent": True}
 
@@ -684,7 +716,11 @@ async def upload_cookies(
     if s2 is None:
         raise HTTPException(status_code=503, detail="S2 client not available")
 
-    content = await file.read()
+    if file.content_type and file.content_type not in ("text/plain", "application/octet-stream"):
+        raise HTTPException(status_code=415, detail="cookies.txt must be plain text")
+    content = await file.read(MAX_COOKIES_UPLOAD_BYTES + 1)
+    if len(content) > MAX_COOKIES_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="cookies.txt is too large")
     sha256 = hashlib.sha256(content).hexdigest()
     date_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
     s2_key = f"tmp/cookies-{date_str}/cookies.txt"

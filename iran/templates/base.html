@@ -413,23 +413,18 @@
   </main>
   <script>
     (function () {
-      // Migrate from sessionStorage to localStorage if needed
-      var legacy = sessionStorage.getItem('rt_access_token');
-      if (legacy) {
-        localStorage.setItem('rt_access_token', legacy);
-        sessionStorage.removeItem('rt_access_token');
-      }
+      var accessToken = null;
+      localStorage.removeItem('rt_access_token');
+      sessionStorage.removeItem('rt_access_token');
 
       function getToken() {
-        return localStorage.getItem('rt_access_token') || sessionStorage.getItem('rt_access_token');
+        return accessToken;
       }
       function setToken(t) {
-        localStorage.setItem('rt_access_token', t);
-        sessionStorage.removeItem('rt_access_token');
+        accessToken = t || null;
       }
       function clearToken() {
-        localStorage.removeItem('rt_access_token');
-        sessionStorage.removeItem('rt_access_token');
+        accessToken = null;
       }
 
       async function refreshToken() {
@@ -445,6 +440,47 @@
       window.getToken = getToken;
       window.setToken = setToken;
       window.clearToken = clearToken;
+      window.escHtml = function(str) {
+        return String(str == null ? '' : str)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      };
+      window.setAlert = function(container, klass, message) {
+        container.textContent = '';
+        var div = document.createElement('div');
+        div.className = 'alert ' + klass;
+        div.textContent = message;
+        container.appendChild(div);
+      };
+
+      // Defense in depth for legacy templates that still compose HTML strings:
+      // strip executable markup/attributes before any innerHTML assignment.
+      (function installInnerHtmlSanitizer() {
+        var descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+        if (!descriptor || !descriptor.set || !descriptor.get) return;
+        function sanitize(html) {
+          var template = document.createElement('template');
+          descriptor.set.call(template, String(html == null ? '' : html));
+          template.content.querySelectorAll('script, iframe, object, embed, link[rel="import"]').forEach(function(n) { n.remove(); });
+          template.content.querySelectorAll('*').forEach(function(el) {
+            Array.prototype.slice.call(el.attributes).forEach(function(attr) {
+              var name = attr.name.toLowerCase();
+              var value = String(attr.value || '').trim().toLowerCase();
+              if (name.indexOf('on') === 0 || value.indexOf('javascript:') === 0 || value.indexOf('data:text/html') === 0) {
+                el.removeAttribute(attr.name);
+              }
+            });
+          });
+          return descriptor.get.call(template);
+        }
+        Object.defineProperty(Element.prototype, 'innerHTML', {
+          configurable: true,
+          enumerable: descriptor.enumerable,
+          get: descriptor.get,
+          set: function(value) { descriptor.set.call(this, sanitize(value)); }
+        });
+      })();
 
       // authFetch: like fetch() but auto-refreshes on 401
       window.authFetch = async function(url, options) {
@@ -468,18 +504,17 @@
       };
 
       // Update nav state
-      if (getToken()) {
+      refreshToken().then(function(token) { if (token) {
         var logoutItem = document.getElementById('nav-logout-item');
         var loginItem = document.getElementById('nav-login-item');
         if (logoutItem) logoutItem.style.display = '';
         if (loginItem) loginItem.style.display = 'none';
-      }
+      }}).catch(function() {});
       var logoutBtn = document.getElementById('nav-logout');
       if (logoutBtn) {
         logoutBtn.addEventListener('click', function (e) {
           e.preventDefault();
-          var t = getToken();
-          if (t) fetch('/auth/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + t }, credentials: 'include' });
+          fetch('/auth/logout', { method: 'POST', credentials: 'include' });
           clearToken();
           window.location.href = '/login';
         });

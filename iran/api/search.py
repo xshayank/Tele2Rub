@@ -29,7 +29,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
@@ -41,7 +41,7 @@ from iran.contracts import SearchRequest
 from iran.db.models import User
 
 # Separate bearer scheme for /search/thumb so it never auto-errors —
-# the endpoint handles the fallback to ?token= itself.
+# the endpoint handles the fallback to the HttpOnly access_token cookie itself.
 _thumb_bearer = HTTPBearer(auto_error=False)
 
 logger = logging.getLogger("iran.api.search")
@@ -189,7 +189,7 @@ async def search(
 async def thumbnail(
     request: Request,
     key: str = Query(..., description="S3 object key of the thumbnail."),
-    token: str | None = Query(None, description="JWT token (alternative to Authorization header)."),
+    access_token: str | None = Cookie(default=None, alias="access_token"),
     credentials: HTTPAuthorizationCredentials | None = Depends(_thumb_bearer),
     session: Any = Depends(get_db),
 ) -> RedirectResponse:
@@ -203,11 +203,10 @@ async def thumbnail(
     from being used as an oracle for arbitrary S3 objects.
 
     Authentication: accepts either ``Authorization: Bearer <jwt>`` header **or**
-    a ``?token=<jwt>`` query parameter, so that ``<img>`` tags (which cannot
-    send custom headers) can also authenticate.
+    the HttpOnly ``access_token`` cookie used by same-origin ``<img>`` tags.
     """
-    # Prefer the Authorization header; fall back to ?token= query param.
-    raw_token: str | None = credentials.credentials if credentials is not None else token
+    # Prefer the Authorization header; fall back to the HttpOnly access cookie.
+    raw_token: str | None = credentials.credentials if credentials is not None else access_token
     if raw_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
