@@ -22,8 +22,8 @@ services:
       dockerfile: iran/Dockerfile
     restart: unless-stopped
     env_file: .env
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     depends_on:
       db:
         condition: service_healthy
@@ -61,6 +61,10 @@ services:
       - ./certs:/etc/nginx/certs:ro
     depends_on:
       - api
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
 
 volumes:
   pgdata:

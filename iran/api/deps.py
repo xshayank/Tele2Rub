@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Cookie, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 if TYPE_CHECKING:
@@ -32,6 +32,7 @@ async def get_db() -> AsyncGenerator["AsyncSession", None]:
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    access_token: str | None = Cookie(default=None, alias="access_token"),
     session: "AsyncSession" = Depends(get_db),
 ) -> "User":
     """Decode and verify the JWT, returning the active ``User``.
@@ -46,13 +47,14 @@ async def get_current_user(
     from iran.api.auth import decode_access_token
     from iran.db.models import User
 
-    if credentials is None:
+    raw_token = credentials.credentials if credentials is not None else access_token
+    if raw_token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    payload = decode_access_token(credentials.credentials)
+    payload = decode_access_token(raw_token)
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
