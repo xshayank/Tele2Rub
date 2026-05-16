@@ -4,7 +4,7 @@
 <h1>مانیتور جاب‌ها</h1>
 <div class="card">
   <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
-    <select id="filter-status" onchange="loadJobs()">
+    <select id="filter-status">
       <option value="">همه وضعیت‌ها</option>
       <option value="pending">در انتظار</option>
       <option value="accepted">قبول‌شده</option>
@@ -13,7 +13,7 @@
       <option value="failed">ناموفق</option>
       <option value="cancelled">لغوشده</option>
     </select>
-    <select id="filter-platform" onchange="loadJobs()">
+    <select id="filter-platform">
       <option value="">همه پلتفرم‌ها</option>
       <option value="youtube">YouTube</option>
       <option value="spotify">Spotify</option>
@@ -72,7 +72,7 @@ async function loadJobs() {
       <td><span class="badge badge-${j.status}">${j.status}</span></td>
       <td>${j.progress}%</td>
       <td class="num">${j.created_at?.slice(0,16).replace('T',' ') ?? ''}</td>
-      <td>${inProgress ? `<button class="btn btn-danger" onclick="cancelJob('${j.job_id}')">لغو</button>` : ''}</td>`;
+      <td>${inProgress ? `<button class="btn btn-danger js-cancel-job" data-job-id="${escHtml(j.job_id)}">لغو</button>` : ''}</td>`;
     tbody.appendChild(tr);
   });
   const pages = Math.ceil(data.total / 25);
@@ -94,6 +94,14 @@ async function cancelJob(id) {
   if (res !== null) { el.className = 'alert alert-success'; el.textContent = 'جاب لغو شد.'; loadJobs(); }
   else { el.className = 'alert alert-error'; el.textContent = 'خطا در لغو جاب.'; }
 }
+
+document.getElementById('jobs-tbody').addEventListener('click', function(e) {
+  const btn = e.target.closest('.js-cancel-job');
+  if (!btn) return;
+  cancelJob(btn.dataset.jobId);
+});
+document.getElementById('filter-status').addEventListener('change', function() { currentPage = 1; loadJobs(); });
+document.getElementById('filter-platform').addEventListener('change', function() { currentPage = 1; loadJobs(); });
 
 loadJobs();
 refreshTimer = setInterval(loadJobs, 5000);

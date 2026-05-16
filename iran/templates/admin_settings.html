@@ -7,11 +7,11 @@
     <div style="color:var(--muted)">در حال بارگذاری…</div>
   </div>
   <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:1rem">
-    <button class="btn btn-primary" onclick="saveSettings()">💾 ذخیره تنظیمات</button>
-    <button class="btn btn-secondary" onclick="openClearcache()">🗑 پاک‌سازی کش</button>
+    <button class="btn btn-primary" id="save-settings-btn">💾 ذخیره تنظیمات</button>
+    <button class="btn btn-secondary" id="open-clearcache-btn">🗑 پاک‌سازی کش</button>
     <label class="btn btn-secondary" style="cursor:pointer">
       🍪 آپلود کوکی‌ها
-      <input type="file" id="cookies-file" style="display:none" onchange="uploadCookies(this)">
+      <input type="file" id="cookies-file" style="display:none">
     </label>
   </div>
   <div id="ack-info" style="display:none;margin-top:1rem" class="alert alert-info"></div>
@@ -27,8 +27,8 @@
       <option value="isrc">ISRC</option>
     </select>
     <div style="display:flex;gap:0.5rem">
-      <button class="btn btn-danger" onclick="doClearcache()">پاک‌سازی</button>
-      <button class="btn btn-secondary" onclick="document.getElementById('clearcache-modal').style.display='none'">لغو</button>
+      <button class="btn btn-danger" id="do-clearcache-btn">پاک‌سازی</button>
+      <button class="btn btn-secondary" id="close-clearcache-btn">لغو</button>
     </div>
   </div>
 </div>
@@ -107,5 +107,12 @@ async function uploadCookies(input) {
 }
 
 load();
+document.getElementById('save-settings-btn').addEventListener('click', saveSettings);
+document.getElementById('open-clearcache-btn').addEventListener('click', openClearcache);
+document.getElementById('do-clearcache-btn').addEventListener('click', doClearcache);
+document.getElementById('close-clearcache-btn').addEventListener('click', function() {
+  document.getElementById('clearcache-modal').style.display = 'none';
+});
+document.getElementById('cookies-file').addEventListener('change', function() { uploadCookies(this); });
 </script>
 {% endblock %}

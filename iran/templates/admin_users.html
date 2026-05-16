@@ -5,14 +5,14 @@
 
 <div class="card">
   <div style="display:flex;gap:1rem;margin-bottom:1rem;flex-wrap:wrap">
-    <select id="filter-status" onchange="loadUsers()">
+    <select id="filter-status">
       <option value="">همه وضعیت‌ها</option>
       <option value="pending_approval">در انتظار تأیید</option>
       <option value="active">فعال</option>
       <option value="blocked">مسدود</option>
       <option value="deleted">حذف‌شده</option>
     </select>
-    <select id="filter-role" onchange="loadUsers()">
+    <select id="filter-role">
       <option value="">همه نقش‌ها</option>
       <option value="user">کاربر</option>
       <option value="admin">مدیر</option>
@@ -52,8 +52,8 @@
       <input id="jl-days" type="number" min="1" value="30" style="width:100%;margin-top:.3rem">
     </label>
     <div style="display:flex;gap:.6rem;margin-top:1rem;justify-content:flex-end">
-      <button class="btn btn-secondary" onclick="closeModal()">انصراف</button>
-      <button class="btn btn-primary" onclick="submitJobLimit()">ذخیره</button>
+      <button class="btn btn-secondary" id="close-jl-modal-btn">انصراف</button>
+      <button class="btn btn-primary" id="submit-jl-modal-btn">ذخیره</button>
     </div>
   </div>
 </div>
@@ -161,6 +161,10 @@ document.getElementById('users-tbody').addEventListener('click', function(e) {
   const jobLimitBtn = e.target.closest('.user-job-limit');
   if (jobLimitBtn) openModal(jobLimitBtn.dataset.userId);
 });
+document.getElementById('filter-status').addEventListener('change', function() { currentPage = 1; loadUsers(); });
+document.getElementById('filter-role').addEventListener('change', function() { currentPage = 1; loadUsers(); });
+document.getElementById('close-jl-modal-btn').addEventListener('click', closeModal);
+document.getElementById('submit-jl-modal-btn').addEventListener('click', submitJobLimit);
 
 loadUsers();
 </script>

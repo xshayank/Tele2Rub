@@ -10,7 +10,7 @@
 <div class="card">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
     <h2 style="margin:0">وضعیت فعلی</h2>
-    <button class="btn btn-primary" onclick="pingNow()" id="ping-btn">🔔 Ping الان</button>
+    <button class="btn btn-primary" id="ping-btn">🔔 Ping الان</button>
   </div>
   <div id="health-data" style="color:var(--muted)">در حال بارگذاری…</div>
 </div>
@@ -107,5 +107,6 @@ async function pingNow() {
 }
 
 load();
+document.getElementById('ping-btn').addEventListener('click', pingNow);
 </script>
 {% endblock %}

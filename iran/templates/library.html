@@ -103,11 +103,11 @@
       var size = totalSize(j.s2_keys);
       var actions = '<a href="/ui/jobs/' + j.job_id + '" class="btn btn-secondary btn-sm">مشاهده</a>';
       if (j.status === 'completed') {
-        actions += ' <button class="btn btn-primary btn-sm" onclick="doDownload(\'' + j.job_id + '\')">⬇ دانلود</button>';
+        actions += ' <button class="btn btn-primary btn-sm js-library-download" data-job-id="' + window.escHtml(j.job_id) + '">⬇ دانلود</button>';
       }
       html += '<tr>';
       html += '<td><span style="font-size:1.1rem">' + icon + '</span> <span class="hide-mobile">' + j.platform + '</span></td>';
-      html += '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + j.url + '" class="num">' + shortUrl(j.url) + '</td>';
+      html += '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + window.escHtml(j.url) + '" class="num">' + window.escHtml(shortUrl(j.url)) + '</td>';
       html += '<td>' + badge + '</td>';
       html += '<td class="num hide-mobile">' + formatDate(j.created_at) + '</td>';
       html += '<td class="num hide-mobile">' + (size || '—') + '</td>';
@@ -148,7 +148,12 @@
       } catch (_) {}
     }
   }
-  window.doDownload = doDownload;
+
+  document.getElementById('jobs-container').addEventListener('click', function(e) {
+    var btn = e.target.closest('.js-library-download');
+    if (!btn) return;
+    doDownload(btn.dataset.jobId);
+  });
 
   loadJobs();
 })();

@@ -4,10 +4,10 @@
 <h1>گزارش فعالیت</h1>
 <div class="card">
   <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
-    <input type="text" id="filter-action" placeholder="نوع اقدام…" style="width:auto" oninput="loadAudit()">
-    <input type="date" id="filter-since" oninput="loadAudit()">
-    <input type="date" id="filter-until" oninput="loadAudit()">
-    <button class="btn btn-secondary" onclick="exportCSV()">⬇️ خروجی CSV</button>
+    <input type="text" id="filter-action" placeholder="نوع اقدام…" style="width:auto">
+    <input type="date" id="filter-since">
+    <input type="date" id="filter-until">
+    <button class="btn btn-secondary" id="export-csv-btn">⬇️ خروجی CSV</button>
   </div>
   <table>
     <thead>
@@ -73,6 +73,11 @@ function exportCSV() {
   a.download = 'audit.csv';
   a.click();
 }
+
+document.getElementById('filter-action').addEventListener('input', loadAudit);
+document.getElementById('filter-since').addEventListener('input', loadAudit);
+document.getElementById('filter-until').addEventListener('input', loadAudit);
+document.getElementById('export-csv-btn').addEventListener('click', exportCSV);
 
 loadAudit();
 </script>
