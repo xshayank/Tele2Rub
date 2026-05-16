@@ -92,8 +92,8 @@ async function loadUsers() {
     const expired = u.job_limit_expires_at && new Date(u.job_limit_expires_at) < new Date();
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${u.display_name}</td>
-      <td>${u.email}</td>
+      <td>${escHtml(u.display_name)}</td>
+      <td>${escHtml(u.email)}</td>
       <td>${u.role}</td>
       <td><span class="badge badge-${u.status === 'active' ? 'completed' : u.status === 'blocked' ? 'failed' : 'pending'}">${u.status}</span></td>
       <td class="num">${u.job_limit != null ? u.job_limit + ' جاب' + (expired ? ' ⚠️' : '') : '—'}</td>
@@ -101,13 +101,13 @@ async function loadUsers() {
       <td class="num">${u.jobs_count != null ? u.jobs_count : 0}</td>
       <td class="num">${fmtDate(u.created_at)}</td>
       <td style="display:flex;gap:0.4rem;flex-wrap:wrap">
-        ${u.status === 'pending_approval' ? `<button class="btn btn-primary" onclick="patchUser('${u.id}','approve')">تأیید</button>` : ''}
-        ${u.status === 'active' ? `<button class="btn btn-danger" onclick="patchUser('${u.id}','block')">مسدود</button>` : ''}
-        ${u.status === 'blocked' ? `<button class="btn btn-secondary" onclick="patchUser('${u.id}','unblock')">رفع مسدودی</button>` : ''}
-        ${u.status !== 'deleted' ? `<button class="btn btn-danger" onclick="patchUser('${u.id}','delete')">حذف</button>` : ''}
-        <button class="btn btn-secondary" onclick="openModal('${u.id}')">سقف جاب</button>
-        ${u.job_limit != null ? `<button class="btn btn-secondary" onclick="patchUser('${u.id}','reset_job_limit')">ریست</button>` : ''}
-        ${u.job_limit != null ? `<button class="btn btn-danger" onclick="patchUser('${u.id}','clear_job_limit')">حذف سقف</button>` : ''}
+        ${u.status === 'pending_approval' ? `<button class="btn btn-primary user-action" data-user-id="${escHtml(u.id)}" data-action="approve">تأیید</button>` : ''}
+        ${u.status === 'active' ? `<button class="btn btn-danger user-action" data-user-id="${escHtml(u.id)}" data-action="block">مسدود</button>` : ''}
+        ${u.status === 'blocked' ? `<button class="btn btn-secondary user-action" data-user-id="${escHtml(u.id)}" data-action="unblock">رفع مسدودی</button>` : ''}
+        ${u.status !== 'deleted' ? `<button class="btn btn-danger user-action" data-user-id="${escHtml(u.id)}" data-action="delete">حذف</button>` : ''}
+        <button class="btn btn-secondary user-job-limit" data-user-id="${escHtml(u.id)}">سقف جاب</button>
+        ${u.job_limit != null ? `<button class="btn btn-secondary user-action" data-user-id="${escHtml(u.id)}" data-action="reset_job_limit">ریست</button>` : ''}
+        ${u.job_limit != null ? `<button class="btn btn-danger user-action" data-user-id="${escHtml(u.id)}" data-action="clear_job_limit">حذف سقف</button>` : ''}
       </td>`;
     tbody.appendChild(tr);
   });
@@ -152,7 +152,16 @@ async function submitJobLimit() {
   await patchUser(uid, 'set_job_limit', { job_limit: limit, days });
 }
 
+document.getElementById('users-tbody').addEventListener('click', function(e) {
+  const actionBtn = e.target.closest('.user-action');
+  if (actionBtn) {
+    patchUser(actionBtn.dataset.userId, actionBtn.dataset.action);
+    return;
+  }
+  const jobLimitBtn = e.target.closest('.user-job-limit');
+  if (jobLimitBtn) openModal(jobLimitBtn.dataset.userId);
+});
+
 loadUsers();
 </script>
 {% endblock %}
-
