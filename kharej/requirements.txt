@@ -4,6 +4,8 @@ pydantic>=2.6
 tenacity>=8.2
 prometheus-client>=0.20
 rubpy>=7.3.4
+requests>=2.31
+pyfreeproxy>=0.4.6
 
 # Test dependencies
 pytest>=8.0
