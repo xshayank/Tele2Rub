@@ -45,9 +45,10 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # ---------------------------------------------------------------------------
 
 _pwd_context = CryptContext(
-    schemes=["pbkdf2_sha256"],
-    deprecated="auto",
+    schemes=["pbkdf2_sha256", "bcrypt"],
+    deprecated=["bcrypt"],
     pbkdf2_sha256__rounds=600000,
+    bcrypt__rounds=12,
 )
 
 
@@ -64,6 +65,11 @@ def verify_password(plain: str, hashed: str) -> bool:
     return _pwd_context.verify(plain, hashed)
 
 
+def password_needs_rehash(hashed: str) -> bool:
+    """Return True when *hashed* should be upgraded to the current scheme."""
+    return _pwd_context.needs_update(hashed)
+
+
 # ---------------------------------------------------------------------------
 # JWT helpers
 # ---------------------------------------------------------------------------
@@ -73,13 +79,26 @@ _REFRESH_COOKIE = "refresh_token"
 _ACCESS_COOKIE = "access_token"
 
 
+def _cookie_secure() -> bool:
+    """Return whether auth cookies should require HTTPS.
+
+    Production deployments behind TLS should keep this True.  Local/IP-only HTTP
+    deployments can set IRAN_COOKIE_SECURE=0 so browser navigation keeps the
+    HttpOnly session cookies.
+    """
+    from iran.config import get_settings
+
+    return bool(getattr(get_settings(), "COOKIE_SECURE", True))
+
+
 def _secret_key() -> str:
     """Return the signing secret from settings (never empty in production)."""
     from iran.config import get_settings
 
-    key = get_settings().SECRET_KEY
+    settings = get_settings()
+    key = settings.SECRET_KEY
     if not key:
-        if get_settings().ENVIRONMENT != "test" and not os.environ.get("PYTEST_CURRENT_TEST"):
+        if getattr(settings, "ENVIRONMENT", "production") != "test" and not os.environ.get("PYTEST_CURRENT_TEST"):
             raise RuntimeError("IRAN_SECRET_KEY must be set to a strong random value")
         key = os.environ.setdefault("_IRAN_JWT_FALLBACK_KEY", os.urandom(32).hex())
     return key
@@ -93,7 +112,7 @@ def set_access_token_cookie(response: Response, token: str) -> None:
         key=_ACCESS_COOKIE,
         value=token,
         httponly=True,
-        secure=True,
+        secure=_cookie_secure(),
         samesite="strict",
         max_age=get_settings().ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
@@ -405,6 +424,8 @@ async def login(
         )
 
     # Update last_seen_at
+    if password_needs_rehash(user.password_hash):
+        user.password_hash = hash_password(body.password)
     user.last_seen_at = datetime.now(tz=timezone.utc)
     await session.flush()
 
@@ -421,7 +442,7 @@ async def login(
         key=_REFRESH_COOKIE,
         value=raw_refresh,
         httponly=True,
-        secure=True,
+        secure=_cookie_secure(),
         samesite="strict",
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
         path="/auth",
@@ -514,7 +535,7 @@ async def refresh(
         key=_REFRESH_COOKIE,
         value=new_raw,
         httponly=True,
-        secure=True,
+        secure=_cookie_secure(),
         samesite="strict",
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
         path="/auth",

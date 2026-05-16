@@ -666,6 +666,16 @@ class TestJWTHelpers:
         assert verify_password("mysecret", hashed)
         assert not verify_password("wrong", hashed)
 
+    def test_legacy_bcrypt_password_hash_and_upgrade_signal(self):
+        from passlib.context import CryptContext
+
+        from iran.api.auth import password_needs_rehash, verify_password
+
+        legacy = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+        hashed = legacy.hash("mysecret")
+        assert verify_password("mysecret", hashed)
+        assert password_needs_rehash(hashed)
+
     def test_token_hash_is_sha256(self):
         import hashlib
 

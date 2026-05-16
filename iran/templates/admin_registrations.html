@@ -43,13 +43,13 @@ async function load() {
   data.registrations.forEach(r => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${r.display_name}</td>
-      <td>${r.email}</td>
+      <td>${escHtml(r.display_name)}</td>
+      <td>${escHtml(r.email)}</td>
       <td class="num">${r.created_at?.slice(0,10) ?? ''}</td>
-      <td>${r.notes ?? ''}</td>
+      <td>${escHtml(r.notes ?? '')}</td>
       <td style="display:flex;gap:0.4rem">
-        <button class="btn btn-primary" onclick="review('${r.id}','approve')">تأیید</button>
-        <button class="btn btn-danger" onclick="review('${r.id}','reject')">رد</button>
+        <button class="btn btn-primary js-review-registration" data-registration-id="${escHtml(r.id)}" data-action="approve">تأیید</button>
+        <button class="btn btn-danger js-review-registration" data-registration-id="${escHtml(r.id)}" data-action="reject">رد</button>
       </td>`;
     tbody.appendChild(tr);
   });
@@ -62,6 +62,12 @@ async function review(id, action) {
   if (res) { el.className = 'alert alert-success'; el.textContent = `عملیات ${action} موفق بود.`; load(); }
   else { el.className = 'alert alert-error'; el.textContent = 'خطا در انجام عملیات.'; }
 }
+
+document.getElementById('regs-tbody').addEventListener('click', function(e) {
+  const btn = e.target.closest('.js-review-registration');
+  if (!btn) return;
+  review(btn.dataset.registrationId, btn.dataset.action);
+});
 
 load();
 </script>
