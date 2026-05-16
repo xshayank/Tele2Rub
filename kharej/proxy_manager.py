@@ -109,12 +109,45 @@ logger = logging.getLogger("kharej.proxy_manager")
 #: Sources that only provide SOCKS proxies are excluded because yt-dlp is
 #: invoked with a plain ``--proxy http://...`` argument.
 _FREEPROXY_SOURCES: list[str] = [
+    "ADVFPProxiedSession",
+    "DatabayProxiedSession",
+    "DpangestuwProxiedSession",
+    "FineProxyProxiedSession",
+    "FloppyDataProxiedSession",
+    "FreeProxyDBProxiedSession",
     "ProxiflyProxiedSession",
+    "FreeVPNNodeProxiedSession",
+    "GeonixProxiedSession",
     "GeonodeProxiedSession",
+    "GoodIPSProxiedSession",
+    "IPLocateProxiedSession",
+    "IP3366ProxiedSession",
+    "IP89ProxiedSession",
+    "IPRoyalProxiedSession",
+    "JiliuipProxiedSession",
+    "KuaidailiProxiedSession",
+    "KxdailiProxiedSession",
     "OpenProxyListProxiedSession",
+    "ProxydbProxiedSession",
+    "ProxyEliteProxiedSession",
+    "ProxyFreeOnlyProxiedSession",
+    "ProxyhubProxiedSession",
     "FreeproxylistProxiedSession",
+    "ProxyNovaProxiedSession",
+    "ProxydailyProxiedSession",
+    "ProxyScrapeProxiedSession",
+    "ProxyShareProxiedSession",
+    "ProxyVerityProxiedSession",
+    "ProxiwareProxiedSession",
     "ProxylistProxiedSession",
+    "PubProxyProxiedSession",
+    "QiyunipProxiedSession",
+    "RoundProxiesProxiedSession",
+    "SCDNProxiedSession",
+    "SixSixDailiProxiedSession",
+    "SpysoneProxiedSession",
     "TheSpeedXProxiedSession",
+    "TrustyTechProxiedSession",
 ]
 
 #: Public HTTP speed-test server used for proxy validation.  Using a numeric
@@ -578,6 +611,7 @@ class ProxyManager:
         self._sources: list[str] = sources if sources is not None else list(_FREEPROXY_SOURCES)
         self._cache_file: Path = cache_file or _PROXY_CACHE_FILE
         self._lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
         # Per-proxy score records (speed, successes, scan passes).
         self._proxy_records: dict[str, _ProxyRecord] = {}
         # Pre-populate from disk so requests succeed immediately after restart.
@@ -606,7 +640,7 @@ class ProxyManager:
     async def start(self) -> None:
         """Fetch and validate the proxy list immediately, then schedule periodic refresh."""
         # Initial fetch in a background thread so we don't block the event loop.
-        await asyncio.to_thread(self._refresh)
+        await asyncio.to_thread(self._refresh_locked, "startup")
         # Schedule recurring refresh
         self._task = asyncio.create_task(self._refresh_loop())
         logger.info({"event": "proxy_manager.started", "interval_sec": _REFRESH_INTERVAL})
@@ -750,7 +784,7 @@ class ProxyManager:
                 "msg": "Proxy pool is empty; running immediate scan before download",
             }
         )
-        await asyncio.to_thread(self._refresh)
+        await asyncio.to_thread(self._refresh_locked, "pool_empty")
         return self.get_proxy()
 
     # ------------------------------------------------------------------
@@ -819,12 +853,33 @@ class ProxyManager:
             }
         )
 
+    def _refresh_locked(self, reason: str) -> None:
+        """Run one refresh at a time and avoid duplicate empty-pool scans.
+
+        When all proxies are evicted, many jobs may call :meth:`scan_and_get_proxy`
+        concurrently.  Without this guard every job starts its own expensive source
+        scrape and validation pass.  This method serialises refreshes and, for
+        empty-pool refills, skips the refresh if a previous waiter already filled
+        the pool while this caller was waiting for the lock.
+        """
+        with self._refresh_lock:
+            if reason == "pool_empty" and self.working_count() > 0:
+                logger.debug(
+                    {
+                        "event": "proxy_manager.refresh_skip",
+                        "reason": reason,
+                        "msg": "Proxy pool was refilled by another scan",
+                    }
+                )
+                return
+            self._refresh()
+
     async def _refresh_loop(self) -> None:
         """Background task: replace the proxy pool every 15 minutes."""
         while True:
             await asyncio.sleep(_REFRESH_INTERVAL)
             try:
-                await asyncio.to_thread(self._refresh)
+                await asyncio.to_thread(self._refresh_locked, "periodic")
             except Exception as exc:
                 logger.warning(
                     {
